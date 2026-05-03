@@ -1,0 +1,94 @@
+id: code-review
+name: Code Review Workflow
+description: Multi-agent internal code review workflow
+version: 1
+inputs:
+  local_files:
+    type: files
+    required: true
+    label: Local Review Files
+  context_note:
+    type: string
+    required: false
+    label: Review Context
+  optional_diff:
+    type: text
+    required: false
+    label: Optional Diff or Notes
+nodes:
+  - id: input
+    type: input
+    name: Local File Input
+    description: Captures local files and optional context used by the local demo.
+  - id: requirement_agent
+    type: agent
+    name: Requirement Analyst
+    description: Summarizes intent, scope, and business assumptions from the PR input.
+    depends_on:
+      - input
+    model: mock
+    prompt: prompts/requirement-agent.md
+    tools:
+      - read_pr_description
+      - read_pr_diff
+    outputs:
+      - requirements_summary.md
+  - id: code_review_agent
+    type: agent
+    name: Code Reviewer
+    description: Reviews correctness, maintainability, and likely regression risks.
+    depends_on:
+      - requirement_agent
+    model: mock
+    prompt: prompts/code-review-agent.md
+    tools:
+      - read_pr_diff
+      - read_artifact
+    outputs:
+      - code_review_report.md
+  - id: security_agent
+    type: agent
+    name: Security Reviewer
+    description: Looks for access-control, data-handling, and secret-management risks.
+    depends_on:
+      - code_review_agent
+    model: mock
+    prompt: prompts/security-agent.md
+    tools:
+      - read_pr_diff
+      - read_artifact
+    outputs:
+      - security_report.md
+  - id: test_agent
+    type: agent
+    name: Test Planner
+    description: Converts the review into a concrete verification plan.
+    depends_on:
+      - security_agent
+    model: mock
+    prompt: prompts/test-agent.md
+    tools:
+      - read_pr_diff
+      - read_artifact
+    outputs:
+      - test_plan.md
+  - id: human_approval
+    type: approval
+    name: Human Approval
+    description: Pauses the workflow for reviewer approval before the final report.
+    depends_on:
+      - test_agent
+    required_role: reviewer
+  - id: final_report_agent
+    type: report
+    name: Final Report Writer
+    description: Combines prior artifacts into a final review report.
+    depends_on:
+      - human_approval
+    model: mock
+    prompt: prompts/final-report-agent.md
+    tools:
+      - read_artifact
+      - write_artifact
+    outputs:
+      - final_review_report.md

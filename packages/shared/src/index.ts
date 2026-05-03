@@ -1,0 +1,379 @@
+export type WorkflowNodeType = "input" | "agent" | "approval" | "output" | "report";
+
+export type WorkflowRunStatus =
+  | "pending"
+  | "running"
+  | "waiting_approval"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type NodeRunStatus =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "skipped"
+  | "waiting_approval";
+
+export type OutputFormat = "markdown" | "html" | "pdf" | "json" | "text";
+
+export type ArtifactType = OutputFormat | "diff";
+
+export type ApprovalStatus = "pending" | "approved" | "rejected";
+
+export type AgentProviderKind =
+  | "mock"
+  | "openai_responses"
+  | "anthropic"
+  | "ollama"
+  | "openai_compatible"
+  | "codex_cli";
+
+export type RunEventType =
+  | "workflow_started"
+  | "node_started"
+  | "node_succeeded"
+  | "node_failed"
+  | "artifact_created"
+  | "approval_requested"
+  | "approval_resolved"
+  | "workflow_completed"
+  | "workflow_failed";
+
+export type RiskLevel = "low" | "medium" | "high";
+
+export interface WorkflowInputDefinition {
+  type: "string" | "text" | "files";
+  required: boolean;
+  label: string;
+}
+
+export interface WorkflowNodePosition {
+  x: number;
+  y: number;
+}
+
+export interface WorkflowNodeInputConfig {
+  acceptsFiles?: boolean;
+  acceptsText?: boolean;
+  label?: string;
+}
+
+export interface WorkflowNodeOutputConfig {
+  formats: OutputFormat[];
+  artifactName?: string;
+}
+
+export interface WorkflowNode {
+  id: string;
+  type: WorkflowNodeType;
+  name: string;
+  description?: string;
+  depends_on?: string[];
+  position?: WorkflowNodePosition;
+  agentId?: string;
+  skillIds?: string[];
+  inputConfig?: WorkflowNodeInputConfig;
+  outputConfig?: WorkflowNodeOutputConfig;
+  model?: string;
+  prompt?: string;
+  tools?: string[];
+  outputs?: string[];
+  required_role?: string;
+}
+
+export type WorkflowStatus = "active" | "draft" | "archived";
+
+export interface WorkflowDefinition {
+  id: string;
+  name: string;
+  description: string;
+  version: number;
+  status?: WorkflowStatus;
+  template?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+  inputs: Record<string, WorkflowInputDefinition>;
+  nodes: WorkflowNode[];
+}
+
+export interface WorkflowRun {
+  id: string;
+  workflowId: string;
+  workflowVersion: number;
+  status: WorkflowRunStatus;
+  inputPayload: RunInputPayload;
+  startedBy: string;
+  startedAt: string;
+  finishedAt?: string;
+  errorMessage?: string;
+}
+
+export interface NodeRun {
+  id: string;
+  workflowRunId: string;
+  nodeId: string;
+  nodeName: string;
+  nodeType: WorkflowNodeType;
+  status: NodeRunStatus;
+  startedAt?: string;
+  finishedAt?: string;
+  errorMessage?: string;
+}
+
+export interface Artifact {
+  id: string;
+  workflowRunId: string;
+  nodeRunId: string;
+  nodeId: string;
+  name: string;
+  type: ArtifactType;
+  version: number;
+  contentPath: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface ArtifactWithContent extends Artifact {
+  content: string;
+}
+
+export interface Approval {
+  id: string;
+  workflowRunId: string;
+  nodeRunId: string;
+  status: ApprovalStatus;
+  requestedBy: string;
+  approvedBy?: string;
+  comment?: string;
+  createdAt: string;
+  resolvedAt?: string;
+}
+
+export interface RunEvent {
+  id: string;
+  workflowRunId: string;
+  nodeId?: string;
+  type: RunEventType;
+  message: string;
+  payload?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface Risk {
+  level: RiskLevel;
+  title: string;
+  description: string;
+}
+
+export interface AgentArtifactOutput {
+  name: string;
+  type: OutputFormat;
+  content: string;
+}
+
+export interface AgentResult {
+  summary: string;
+  artifacts: AgentArtifactOutput[];
+  risks: Risk[];
+  nextActions: string[];
+}
+
+export interface LocalInputFile {
+  id: string;
+  name: string;
+  relativePath?: string;
+  size: number;
+  type?: string;
+  content: string;
+}
+
+export interface RunInputPayload {
+  sourceLabel: string;
+  contextNote?: string;
+  files: LocalInputFile[];
+  prUrl?: string;
+  prDiff?: string;
+}
+
+export interface CreateRunRequest {
+  workflowId: string;
+  inputPayload: RunInputPayload;
+}
+
+export interface ApprovalRequest {
+  action: "approve" | "reject";
+  comment?: string;
+}
+
+export interface RunState {
+  run: WorkflowRun;
+  workflow: WorkflowDefinition;
+  nodeRuns: NodeRun[];
+  artifacts: Artifact[];
+  approvals: Approval[];
+  events: RunEvent[];
+}
+
+export interface WorkflowSummary {
+  id: string;
+  name: string;
+  description: string;
+  version: number;
+  nodeCount: number;
+  status?: WorkflowStatus;
+  template?: boolean;
+  updatedAt?: string;
+}
+
+export interface AgentDefinition {
+  id: string;
+  name: string;
+  description: string;
+  provider: AgentProviderKind;
+  model: string;
+  systemPrompt: string;
+  outputFormats: OutputFormat[];
+  skillIds: string[];
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SkillDefinition {
+  id: string;
+  name: string;
+  description: string;
+  content: string;
+  sourcePath?: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StudioOverview {
+  workflows: WorkflowSummary[];
+  agents: AgentDefinition[];
+  skills: SkillDefinition[];
+  recentRuns: WorkflowRun[];
+}
+
+export interface CreateWorkflowRequest {
+  template?: "blank" | "code-review";
+  name?: string;
+  description?: string;
+}
+
+export interface UpdateWorkflowRequest {
+  workflow: WorkflowDefinition;
+}
+
+export interface CreateAgentRequest {
+  name: string;
+  description?: string;
+  provider?: AgentProviderKind;
+  model?: string;
+  systemPrompt?: string;
+  outputFormats?: OutputFormat[];
+  skillIds?: string[];
+  enabled?: boolean;
+}
+
+export interface UpdateAgentRequest extends CreateAgentRequest {
+  id?: string;
+}
+
+export interface CreateSkillRequest {
+  name: string;
+  description?: string;
+  content?: string;
+  sourcePath?: string;
+  enabled?: boolean;
+}
+
+export interface UpdateSkillRequest extends CreateSkillRequest {
+  id?: string;
+}
+
+export type CliChatStatus = "idle" | "running" | "completed" | "cancelled" | "error";
+
+export type CliProviderStatus = "not_ready" | "ready" | "running" | "error";
+
+export type CliChatRole = "user" | "assistant" | "system" | "error";
+
+export type CliStreamEventType =
+  | "status"
+  | "message_created"
+  | "chunk"
+  | "completed"
+  | "cancelled"
+  | "error";
+
+export interface CliContextFile {
+  name: string;
+  relativePath?: string;
+  size: number;
+}
+
+export interface CliChatContext {
+  workflowId?: string;
+  workflowName?: string;
+  runId?: string;
+  runStatus?: WorkflowRunStatus;
+  selectedNodeId?: string;
+  selectedNodeName?: string;
+  contextNote?: string;
+  localFiles?: CliContextFile[];
+}
+
+export interface CliChatSession {
+  id: string;
+  status: CliChatStatus;
+  createdAt: string;
+  updatedAt: string;
+  lastError?: string;
+}
+
+export interface CliChatMessage {
+  id: string;
+  sessionId: string;
+  role: CliChatRole;
+  content: string;
+  createdAt: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CliProviderStatusResponse {
+  status: CliProviderStatus;
+  cliCorePath: string;
+  entrypoint?: string;
+  command?: string;
+  bunAvailable: boolean;
+  dependenciesInstalled: boolean;
+  message: string;
+}
+
+export interface CreateCliSessionRequest {
+  context?: CliChatContext;
+}
+
+export interface SendCliMessageRequest {
+  content: string;
+  context?: CliChatContext;
+}
+
+export interface CliStreamEvent {
+  id: string;
+  sessionId: string;
+  type: CliStreamEventType;
+  messageId?: string;
+  content?: string;
+  message?: CliChatMessage;
+  status?: CliChatStatus | CliProviderStatus;
+  error?: string;
+  payload?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export const DEFAULT_USER_ID = "local-reviewer";

@@ -1,0 +1,29 @@
+{
+  "name": "@agent-studio/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@agent-studio/agent-core": "workspace:*",
+    "@agent-studio/shared": "workspace:*",
+    "@agent-studio/workflow-core": "workspace:*",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "tsx": "^4.19.2",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}
+

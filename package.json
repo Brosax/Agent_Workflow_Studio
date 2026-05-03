@@ -1,0 +1,20 @@
+{
+  "name": "enterprise-agent-workflow-studio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "dev": "corepack pnpm --parallel --filter @agent-studio/api --filter @agent-studio/web dev",
+    "dev:api": "corepack pnpm --filter @agent-studio/api dev",
+    "dev:web": "corepack pnpm --filter @agent-studio/web dev",
+    "typecheck": "corepack pnpm --recursive typecheck",
+    "test": "corepack pnpm --recursive test",
+    "build": "corepack pnpm --recursive build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

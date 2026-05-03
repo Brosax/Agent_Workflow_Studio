@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.turbo/
+.vite/
+coverage/
+data/
+.env
+*.log
+vendor/D_RD/
+
