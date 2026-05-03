@@ -738,6 +738,16 @@
             renderer.render(scene, camera);
         } 
 
+        function notifyParentComplete() {
+            if (window.parent && window.parent !== window) {
+                window.parent.postMessage({ type: 'loading-screen-complete' }, window.location.origin);
+            }
+        }
+
+        window.addEventListener('click', notifyParentComplete);
+        window.addEventListener('pointerup', notifyParentComplete);
+        window.addEventListener('touchend', notifyParentComplete, { passive: true });
+
         init();
     </script>
 </body>

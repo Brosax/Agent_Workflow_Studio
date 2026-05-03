@@ -994,10 +994,3 @@ select:focus {
   border: none;
   display: block;
 }
-
-.loading-click-catcher {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  cursor: pointer;
-}
