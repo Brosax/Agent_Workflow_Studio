@@ -369,6 +369,27 @@ p {
   gap: 8px;
 }
 
+.node-palette-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.palette-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 0;
+}
+
+.node-palette-group .ghost-button {
+  font-size: 12px;
+  padding: 5px 8px;
+}
+
 label {
   display: grid;
   gap: 7px;
@@ -538,6 +559,19 @@ select:focus {
 
 .flow-node-waiting_approval {
   border-color: #d97706;
+}
+
+.flow-node-skipped {
+  border-color: #94a3b8;
+  opacity: 0.7;
+}
+
+.flow-node-condition {
+  border-color: #8b5cf6;
+}
+
+.flow-node-trigger {
+  border-color: #06b6d4;
 }
 
 .detail-header {

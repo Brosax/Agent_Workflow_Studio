@@ -1,4 +1,17 @@
-export type WorkflowNodeType = "input" | "agent" | "approval" | "output" | "report";
+export type WorkflowNodeType =
+  | "input"
+  | "agent"
+  | "approval"
+  | "output"
+  | "report"
+  | "trigger"
+  | "model_selector"
+  | "tool_executor"
+  | "document_loader"
+  | "retriever"
+  | "condition"
+  | "merge"
+  | "filter";
 
 export type WorkflowRunStatus =
   | "pending"
@@ -35,6 +48,7 @@ export type RunEventType =
   | "node_started"
   | "node_succeeded"
   | "node_failed"
+  | "node_skipped"
   | "artifact_created"
   | "approval_requested"
   | "approval_resolved"
@@ -52,6 +66,68 @@ export interface WorkflowInputDefinition {
 export interface WorkflowNodePosition {
   x: number;
   y: number;
+}
+
+export type WorkflowConnectionHandle = "main" | "true" | "false";
+
+export interface WorkflowConnection {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle?: WorkflowConnectionHandle;
+  targetHandle?: string;
+}
+
+export type TriggerMode = "manual";
+
+export type ModelProvider = "mock" | "codex_cli" | "openai_responses" | "ollama" | "openai_compatible";
+
+export type ToolKind = "d_rd_cli_status" | "git_status" | "list_input_files";
+
+export type DocumentSource = "input_files" | "upstream_artifacts" | "both";
+
+export type ConditionSource = "context_note" | "optional_diff" | "combined_artifacts";
+export type ConditionOperator = "contains" | "not_contains" | "equals" | "exists";
+
+export type MergeStrategy = "concat_artifacts";
+
+export type FilterOperator = "contains" | "not_contains";
+
+export interface TriggerNodeConfig {
+  mode: TriggerMode;
+}
+
+export interface ModelSelectorNodeConfig {
+  provider: ModelProvider;
+  model: string;
+}
+
+export interface ToolExecutorNodeConfig {
+  toolKind: ToolKind;
+}
+
+export interface DocumentLoaderNodeConfig {
+  source: DocumentSource;
+}
+
+export interface RetrieverNodeConfig {
+  query?: string;
+  topK?: number;
+}
+
+export interface ConditionNodeConfig {
+  source: ConditionSource;
+  operator: ConditionOperator;
+  value?: string;
+}
+
+export interface MergeNodeConfig {
+  strategy: MergeStrategy;
+}
+
+export interface FilterNodeConfig {
+  operator: FilterOperator;
+  value: string;
 }
 
 export interface WorkflowNodeInputConfig {
@@ -81,6 +157,14 @@ export interface WorkflowNode {
   tools?: string[];
   outputs?: string[];
   required_role?: string;
+  triggerConfig?: TriggerNodeConfig;
+  modelSelectorConfig?: ModelSelectorNodeConfig;
+  toolExecutorConfig?: ToolExecutorNodeConfig;
+  documentLoaderConfig?: DocumentLoaderNodeConfig;
+  retrieverConfig?: RetrieverNodeConfig;
+  conditionConfig?: ConditionNodeConfig;
+  mergeConfig?: MergeNodeConfig;
+  filterConfig?: FilterNodeConfig;
 }
 
 export type WorkflowStatus = "active" | "draft" | "archived";
@@ -96,6 +180,7 @@ export interface WorkflowDefinition {
   updatedAt?: string;
   inputs: Record<string, WorkflowInputDefinition>;
   nodes: WorkflowNode[];
+  connections?: WorkflowConnection[];
 }
 
 export interface WorkflowRun {

@@ -288,15 +288,24 @@ export function App() {
     );
 
     setFlowEdges(
-      workflow.nodes.flatMap((node) =>
-        (node.depends_on ?? []).map((dependency) => ({
-          id: `${dependency}-${node.id}`,
-          source: dependency,
-          target: node.id,
-          animated: nodeRunsByNodeId.get(node.id)?.status === "running",
-          style: { stroke: "#6b7280", strokeWidth: 1.5 }
-        }))
-      )
+      workflow.connections
+        ? workflow.connections.map((conn) => ({
+            id: conn.id,
+            source: conn.source,
+            target: conn.target,
+            sourceHandle: conn.sourceHandle === "main" ? undefined : conn.sourceHandle,
+            animated: nodeRunsByNodeId.get(conn.target)?.status === "running",
+            style: { stroke: "#6b7280", strokeWidth: 1.5 }
+          }))
+        : workflow.nodes.flatMap((node) =>
+            (node.depends_on ?? []).map((dependency) => ({
+              id: `${dependency}-${node.id}`,
+              source: dependency,
+              target: node.id,
+              animated: nodeRunsByNodeId.get(node.id)?.status === "running",
+              style: { stroke: "#6b7280", strokeWidth: 1.5 }
+            }))
+          )
     );
   }, [artifactsByNodeId, nodeRunsByNodeId, setFlowEdges, setFlowNodes, workflow]);
 
@@ -394,7 +403,7 @@ export function App() {
   }
 
   function deleteSelectedNode() {
-    if (!workflow || !selectedNode || selectedNode.type === "input") {
+    if (!workflow || !selectedNode || selectedNode.type === "input" || selectedNode.type === "trigger") {
       return;
     }
     const nodes = workflow.nodes
@@ -962,13 +971,62 @@ function BuilderPage(props: {
       <aside className="builder-left">
         <div className="tool-group">
           <h3>Add Node</h3>
-          <div className="node-palette">
-            {(["input", "agent", "approval", "output"] as WorkflowNodeType[]).map((type) => (
-              <button key={type} className="ghost-button" onClick={() => props.onAddNode(type)}>
-                <Plus size={15} />
-                {type}
-              </button>
-            ))}
+          <div className="node-palette-group">
+            <span className="palette-label">Trigger</span>
+            <button className="ghost-button" onClick={() => props.onAddNode("trigger")}>
+              <Play size={15} /> Trigger
+            </button>
+          </div>
+          <div className="node-palette-group">
+            <span className="palette-label">Input</span>
+            <button className="ghost-button" onClick={() => props.onAddNode("input")}>
+              <Plus size={15} /> Input
+            </button>
+            <button className="ghost-button" onClick={() => props.onAddNode("document_loader")}>
+              <FileText size={15} /> Document Loader
+            </button>
+          </div>
+          <div className="node-palette-group">
+            <span className="palette-label">Agent</span>
+            <button className="ghost-button" onClick={() => props.onAddNode("model_selector")}>
+              <Sparkles size={15} /> Model Selector
+            </button>
+            <button className="ghost-button" onClick={() => props.onAddNode("agent")}>
+              <Bot size={15} /> Agent
+            </button>
+            <button className="ghost-button" onClick={() => props.onAddNode("report")}>
+              <FileText size={15} /> Report Agent
+            </button>
+          </div>
+          <div className="node-palette-group">
+            <span className="palette-label">Tools</span>
+            <button className="ghost-button" onClick={() => props.onAddNode("tool_executor")}>
+              <Terminal size={15} /> Tool Executor
+            </button>
+            <button className="ghost-button" onClick={() => props.onAddNode("retriever")}>
+              <Sparkles size={15} /> Retriever
+            </button>
+          </div>
+          <div className="node-palette-group">
+            <span className="palette-label">Control</span>
+            <button className="ghost-button" onClick={() => props.onAddNode("condition")}>
+              <ChevronDown size={15} /> If / Condition
+            </button>
+            <button className="ghost-button" onClick={() => props.onAddNode("merge")}>
+              <Plus size={15} /> Merge
+            </button>
+            <button className="ghost-button" onClick={() => props.onAddNode("filter")}>
+              <Circle size={15} /> Filter
+            </button>
+            <button className="ghost-button" onClick={() => props.onAddNode("approval")}>
+              <Check size={15} /> Human Approval
+            </button>
+          </div>
+          <div className="node-palette-group">
+            <span className="palette-label">Output</span>
+            <button className="ghost-button" onClick={() => props.onAddNode("output")}>
+              <FileText size={15} /> Artifact Output
+            </button>
           </div>
         </div>
         <RunInputPanel
@@ -1211,6 +1269,207 @@ function NodeEditor(props: {
           </div>
         </section>
       ) : null}
+      {props.node.type === "model_selector" ? (
+        <section className="detail-section flush">
+          <h3>Model Configuration</h3>
+          <label>
+            Provider
+            <select
+              value={props.node.modelSelectorConfig?.provider ?? "mock"}
+              onChange={(event) =>
+                props.onUpdateNode({
+                  modelSelectorConfig: { provider: event.target.value as import("@agent-studio/shared").ModelProvider, model: props.node?.modelSelectorConfig?.model ?? "" }
+                })
+              }
+            >
+              <option value="mock">Mock</option>
+              <option value="codex_cli">Codex CLI</option>
+              <option value="openai_responses">OpenAI Responses</option>
+              <option value="ollama">Ollama</option>
+              <option value="openai_compatible">OpenAI Compatible</option>
+            </select>
+          </label>
+          <label>
+            Model
+            <input
+              value={props.node.modelSelectorConfig?.model ?? ""}
+              onChange={(event) =>
+                props.onUpdateNode({
+                  modelSelectorConfig: { provider: props.node?.modelSelectorConfig?.provider ?? "mock", model: event.target.value }
+                })
+              }
+            />
+          </label>
+        </section>
+      ) : null}
+      {props.node.type === "tool_executor" ? (
+        <section className="detail-section flush">
+          <h3>Tool Configuration</h3>
+          <label>
+            Tool
+            <select
+              value={props.node.toolExecutorConfig?.toolKind ?? "list_input_files"}
+              onChange={(event) =>
+                props.onUpdateNode({
+                  toolExecutorConfig: { toolKind: event.target.value as import("@agent-studio/shared").ToolKind }
+                })
+              }
+            >
+              <option value="list_input_files">List Input Files</option>
+              <option value="git_status">Git Status</option>
+              <option value="d_rd_cli_status">D_RD CLI Status</option>
+            </select>
+          </label>
+        </section>
+      ) : null}
+      {props.node.type === "document_loader" ? (
+        <section className="detail-section flush">
+          <h3>Document Source</h3>
+          <label>
+            Source
+            <select
+              value={props.node.documentLoaderConfig?.source ?? "both"}
+              onChange={(event) =>
+                props.onUpdateNode({
+                  documentLoaderConfig: { source: event.target.value as import("@agent-studio/shared").DocumentSource }
+                })
+              }
+            >
+              <option value="input_files">Input Files</option>
+              <option value="upstream_artifacts">Upstream Artifacts</option>
+              <option value="both">Both</option>
+            </select>
+          </label>
+        </section>
+      ) : null}
+      {props.node.type === "retriever" ? (
+        <section className="detail-section flush">
+          <h3>Retriever Configuration</h3>
+          <label>
+            Query
+            <input
+              value={props.node.retrieverConfig?.query ?? ""}
+              placeholder="Uses context note if empty"
+              onChange={(event) =>
+                props.onUpdateNode({
+                  retrieverConfig: { ...props.node?.retrieverConfig, query: event.target.value, topK: props.node?.retrieverConfig?.topK ?? 5 }
+                })
+              }
+            />
+          </label>
+          <label>
+            Top K
+            <input
+              type="number"
+              min={1}
+              max={20}
+              value={props.node.retrieverConfig?.topK ?? 5}
+              onChange={(event) =>
+                props.onUpdateNode({
+                  retrieverConfig: { ...props.node?.retrieverConfig, query: props.node?.retrieverConfig?.query, topK: Number(event.target.value) }
+                })
+              }
+            />
+          </label>
+        </section>
+      ) : null}
+      {props.node.type === "condition" ? (
+        <section className="detail-section flush">
+          <h3>Condition Configuration</h3>
+          <label>
+            Source
+            <select
+              value={props.node.conditionConfig?.source ?? "context_note"}
+              onChange={(event) =>
+                props.onUpdateNode({
+                  conditionConfig: { ...props.node?.conditionConfig, source: event.target.value as import("@agent-studio/shared").ConditionSource, operator: props.node?.conditionConfig?.operator ?? "exists" }
+                })
+              }
+            >
+              <option value="context_note">Context Note</option>
+              <option value="optional_diff">Optional Diff</option>
+              <option value="combined_artifacts">Combined Artifacts</option>
+            </select>
+          </label>
+          <label>
+            Operator
+            <select
+              value={props.node.conditionConfig?.operator ?? "exists"}
+              onChange={(event) =>
+                props.onUpdateNode({
+                  conditionConfig: { ...props.node?.conditionConfig, source: props.node?.conditionConfig?.source ?? "context_note", operator: event.target.value as import("@agent-studio/shared").ConditionOperator }
+                })
+              }
+            >
+              <option value="exists">Exists</option>
+              <option value="contains">Contains</option>
+              <option value="not_contains">Not Contains</option>
+              <option value="equals">Equals</option>
+            </select>
+          </label>
+          {props.node.conditionConfig?.operator !== "exists" ? (
+            <label>
+              Value
+              <input
+                value={props.node.conditionConfig?.value ?? ""}
+                onChange={(event) =>
+                  props.onUpdateNode({
+                    conditionConfig: { ...props.node?.conditionConfig, source: props.node?.conditionConfig?.source ?? "context_note", operator: props.node?.conditionConfig?.operator ?? "exists", value: event.target.value }
+                  })
+                }
+              />
+            </label>
+          ) : null}
+        </section>
+      ) : null}
+      {props.node.type === "merge" ? (
+        <section className="detail-section flush">
+          <h3>Merge Strategy</h3>
+          <label>
+            Strategy
+            <select
+              value={props.node.mergeConfig?.strategy ?? "concat_artifacts"}
+              onChange={(event) =>
+                props.onUpdateNode({
+                  mergeConfig: { strategy: event.target.value as import("@agent-studio/shared").MergeStrategy }
+                })
+              }
+            >
+              <option value="concat_artifacts">Concat Artifacts</option>
+            </select>
+          </label>
+        </section>
+      ) : null}
+      {props.node.type === "filter" ? (
+        <section className="detail-section flush">
+          <h3>Filter Configuration</h3>
+          <label>
+            Operator
+            <select
+              value={props.node.filterConfig?.operator ?? "contains"}
+              onChange={(event) =>
+                props.onUpdateNode({
+                  filterConfig: { operator: event.target.value as import("@agent-studio/shared").FilterOperator, value: props.node?.filterConfig?.value ?? "" }
+                })
+              }
+            >
+              <option value="contains">Contains</option>
+              <option value="not_contains">Not Contains</option>
+            </select>
+          </label>
+          <label>
+            Value
+            <input
+              value={props.node.filterConfig?.value ?? ""}
+              onChange={(event) =>
+                props.onUpdateNode({
+                  filterConfig: { operator: props.node?.filterConfig?.operator ?? "contains", value: event.target.value }
+                })
+              }
+            />
+          </label>
+        </section>
+      ) : null}
       {props.isApprovalWaiting ? (
         <section className="approval-box">
           <h3>Human Approval</h3>
@@ -1227,7 +1486,7 @@ function NodeEditor(props: {
           </div>
         </section>
       ) : null}
-      <button className="danger-button full" disabled={props.node.type === "input"} onClick={props.onDeleteNode}>
+      <button className="danger-button full" disabled={props.node.type === "input" || props.node.type === "trigger"} onClick={props.onDeleteNode}>
         <Trash2 size={16} />
         Delete node
       </button>
@@ -1466,8 +1725,9 @@ function ResourceEditor(props: { title: string; enabled: boolean; children: Reac
 }
 
 function WorkflowNodeCard({ data }: NodeProps<Node<WorkflowNodeData>>) {
+  const isCondition = data.nodeType === "condition";
   return (
-    <div className={`flow-node flow-node-${data.status}`}>
+    <div className={`flow-node flow-node-${data.nodeType} flow-node-${data.status}`}>
       <Handle type="target" position={Position.Top} />
       <div className="node-topline">
         {statusIcon(data.status)}
@@ -1479,7 +1739,14 @@ function WorkflowNodeCard({ data }: NodeProps<Node<WorkflowNodeData>>) {
         <span>{data.status.replace("_", " ")}</span>
         <span>{data.artifactCount} artifact{data.artifactCount === 1 ? "" : "s"}</span>
       </div>
-      <Handle type="source" position={Position.Bottom} />
+      {isCondition ? (
+        <>
+          <Handle type="source" position={Position.Bottom} id="true" style={{ left: "30%" }} />
+          <Handle type="source" position={Position.Bottom} id="false" style={{ left: "70%" }} />
+        </>
+      ) : (
+        <Handle type="source" position={Position.Bottom} />
+      )}
     </div>
   );
 }
@@ -1619,8 +1886,16 @@ function materializeWorkflowFromCanvas(
   edges: Edge[]
 ): WorkflowDefinition {
   const dependencies = new Map<string, string[]>();
+  const connections: import("@agent-studio/shared").WorkflowConnection[] = [];
   for (const edge of edges) {
     dependencies.set(edge.target, [...(dependencies.get(edge.target) ?? []), edge.source]);
+    const sourceHandle = (edge.sourceHandle as import("@agent-studio/shared").WorkflowConnectionHandle) ?? "main";
+    connections.push({
+      id: edge.id || `${edge.source}-${edge.target}`,
+      source: edge.source,
+      target: edge.target,
+      sourceHandle
+    });
   }
   const positions = new Map(nodes.map((node) => [node.id, node.position]));
   return {
@@ -1631,7 +1906,8 @@ function materializeWorkflowFromCanvas(
       ...node,
       position: positions.get(node.id) ?? node.position,
       depends_on: dependencies.get(node.id) ?? []
-    }))
+    })),
+    connections
   };
 }
 
@@ -1663,6 +1939,30 @@ function createNode(type: WorkflowNodeType, id: string, dependency?: string): Wo
       outputs: [`${id}.md`, `${id}.html`, `${id}.pdf`],
       outputConfig: { formats: ["markdown", "html", "pdf"], artifactName: id }
     };
+  }
+  if (type === "trigger") {
+    return { ...base, name: "Manual Trigger", triggerConfig: { mode: "manual" } };
+  }
+  if (type === "model_selector") {
+    return { ...base, name: "Model Selector", modelSelectorConfig: { provider: "mock", model: "mock-agent" } };
+  }
+  if (type === "tool_executor") {
+    return { ...base, name: "Tool Executor", toolExecutorConfig: { toolKind: "list_input_files" } };
+  }
+  if (type === "document_loader") {
+    return { ...base, name: "Document Loader", documentLoaderConfig: { source: "both" } };
+  }
+  if (type === "retriever") {
+    return { ...base, name: "Retriever", retrieverConfig: { topK: 5 } };
+  }
+  if (type === "condition") {
+    return { ...base, name: "Condition", conditionConfig: { source: "context_note", operator: "exists" } };
+  }
+  if (type === "merge") {
+    return { ...base, name: "Merge", mergeConfig: { strategy: "concat_artifacts" } };
+  }
+  if (type === "filter") {
+    return { ...base, name: "Filter", filterConfig: { operator: "contains", value: "" } };
   }
   return { ...base, name: "Input", inputConfig: { acceptsFiles: true, acceptsText: true } };
 }
