@@ -6,5 +6,6 @@ coverage/
 data/
 .env
 *.log
-vendor/D_RD/
+.worktrees/
+
 

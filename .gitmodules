@@ -1,0 +1,3 @@
+[submodule "vendor/D_RD"]
+	path = vendor/D_RD
+	url = https://github.com/Brosax/D_RD.git
