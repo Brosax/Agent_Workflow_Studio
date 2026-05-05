@@ -81,9 +81,9 @@ p {
 .workspace-actions,
 .button-row,
 .toolbar-actions,
-.cli-chat-header,
-.cli-chat-title,
-.cli-chat-actions {
+.cli-terminal-header,
+.cli-terminal-title,
+.cli-terminal-actions {
   display: flex;
   align-items: center;
 }
@@ -1087,7 +1087,7 @@ select:focus {
 }
 
 .error-box,
-.chat-error {
+.terminal-error {
   color: #991b1b;
   background: #fee2e2;
   border: 1px solid #fecaca;
@@ -1096,54 +1096,73 @@ select:focus {
   font-size: 13px;
 }
 
-.chat-launcher {
+.terminal-launcher {
   position: fixed;
-  right: 22px;
-  bottom: 22px;
+  right: 18px;
+  bottom: 12px;
+  left: 278px;
   z-index: 30;
-  display: inline-flex;
+  display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
   min-height: 42px;
   border: 1px solid #cbd5e1;
   border-radius: 8px;
   background: #17202a;
   color: #ffffff;
-  padding: 10px 13px;
+  padding: 9px 12px;
   font-weight: 850;
   box-shadow: 0 12px 28px rgba(15, 23, 42, 0.22);
 }
 
-.chat-launcher-ready {
+.studio-app-sidebar-hidden .terminal-launcher {
+  left: 82px;
+}
+
+.terminal-launcher strong {
+  margin-left: auto;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  padding: 4px 8px;
+  font-size: 11px;
+  text-transform: capitalize;
+}
+
+.terminal-launcher-ready {
   background: #176b45;
 }
 
-.chat-launcher-running {
+.terminal-launcher-running {
   background: #1d4ed8;
 }
 
-.chat-launcher-error,
-.chat-launcher-not_ready {
+.terminal-launcher-error,
+.terminal-launcher-not_ready {
   background: #7f1d1d;
 }
 
-.cli-chat-dock {
+.cli-terminal-dock {
   position: fixed;
+  left: 278px;
   right: 18px;
   bottom: 18px;
   z-index: 30;
   display: grid;
-  grid-template-rows: auto minmax(180px, 1fr) auto auto;
-  width: min(430px, calc(100vw - 36px));
-  max-height: min(680px, calc(100vh - 36px));
+  grid-template-rows: auto auto minmax(0, 1fr);
+  height: min(380px, calc(100vh - 92px));
   border: 1px solid #cbd5e1;
   border-radius: 8px;
-  background: #ffffff;
+  background: #0b1020;
   box-shadow: 0 18px 44px rgba(15, 23, 42, 0.24);
   overflow: hidden;
 }
 
-.cli-chat-header {
+.studio-app-sidebar-hidden .cli-terminal-dock {
+  left: 82px;
+}
+
+.cli-terminal-header {
   justify-content: space-between;
   gap: 12px;
   padding: 12px;
@@ -1157,17 +1176,17 @@ select:focus {
   flex: none;
 }
 
-.cli-chat-title {
+.cli-terminal-title {
   gap: 10px;
   min-width: 0;
 }
 
-.cli-chat-title h2 {
+.cli-terminal-title h2 {
   font-size: 15px;
 }
 
-.cli-chat-title p {
-  max-width: 250px;
+.cli-terminal-title p {
+  max-width: min(620px, 48vw);
   color: #64748b;
   font-size: 12px;
   overflow: hidden;
@@ -1181,6 +1200,11 @@ select:focus {
   font-size: 11px;
   font-weight: 850;
   text-transform: capitalize;
+}
+
+.cli-terminal-actions {
+  gap: 8px;
+  flex: none;
 }
 
 .cli-status-ready {
@@ -1199,85 +1223,29 @@ select:focus {
   color: #991b1b;
 }
 
-.cli-chat-messages {
-  display: grid;
-  align-content: start;
-  gap: 10px;
-  min-height: 0;
-  padding: 12px;
-  overflow-y: auto;
-  background: #f8fafc;
-}
-
-.cli-chat-empty {
-  display: grid;
-  place-items: center;
-  gap: 8px;
-  min-height: 210px;
-  color: #64748b;
-  text-align: center;
-  font-size: 13px;
-}
-
-.cli-message {
-  display: grid;
-  gap: 6px;
-  max-width: 92%;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  padding: 9px 10px;
-  background: #ffffff;
-  font-size: 13px;
-  line-height: 1.45;
-}
-
-.cli-message-user {
-  justify-self: end;
-  border-color: #bbf7d0;
-  background: #f0fdf4;
-}
-
-.cli-message-meta {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  color: #64748b;
-  font-size: 11px;
-  font-weight: 850;
-  text-transform: uppercase;
-}
-
-.cli-chat-footer {
-  display: grid;
-  gap: 8px;
-  padding: 12px;
-  border-top: 1px solid #e2e8f0;
-}
-
-.chat-input-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 34px;
-  align-items: end;
-  gap: 8px;
-}
-
-.chat-input-row textarea {
-  min-height: 72px;
-  max-height: 150px;
-  font-family: inherit;
-  font-size: 13px;
-}
-
-.send-chat {
-  background: #176b45;
-  border-color: #176b45;
-  color: #ffffff;
-}
-
 .stop-chat {
   background: #fee2e2;
   border-color: #fecaca;
   color: #991b1b;
+}
+
+.terminal-error {
+  margin: 10px 12px 0;
+}
+
+.cli-terminal-body {
+  min-height: 0;
+  padding: 10px;
+  background: #0b1020;
+}
+
+.cli-terminal-body .xterm {
+  height: 100%;
+}
+
+.cli-terminal-body .xterm-viewport,
+.cli-terminal-body .xterm-screen {
+  width: 100%;
 }
 
 .empty-state {
@@ -1325,6 +1293,18 @@ select:focus {
   .studio-app-sidebar-hidden .builder-header,
   .studio-app-sidebar-hidden .studio-page {
     padding-left: 64px;
+  }
+
+  .terminal-launcher,
+  .studio-app-sidebar-hidden .terminal-launcher,
+  .cli-terminal-dock,
+  .studio-app-sidebar-hidden .cli-terminal-dock {
+    left: 12px;
+    right: 12px;
+  }
+
+  .cli-terminal-title p {
+    max-width: 34vw;
   }
 
   .builder-shell {

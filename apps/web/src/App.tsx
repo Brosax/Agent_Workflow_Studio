@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
+import { Terminal as XTermTerminal } from "@xterm/xterm";
 import {
   Background,
   BaseEdge,
@@ -35,13 +36,11 @@ import {
   FileText,
   Home,
   LoaderCircle,
-  MessageSquare,
   Pause,
   Play,
   Plus,
   RefreshCw,
   Save,
-  Send,
   Sparkles,
   Square,
   Terminal,
@@ -54,11 +53,9 @@ import type {
   ApprovalRequest,
   Artifact,
   ArtifactWithContent,
-  CliChatContext,
-  CliChatMessage,
-  CliChatSession,
   CliProviderStatusResponse,
-  CliStreamEvent,
+  CliTerminalEvent,
+  CliTerminalInputEvent,
   CreateAgentRequest,
   CreateSkillRequest,
   LocalInputFile,
@@ -67,7 +64,6 @@ import type {
   OutputFormat,
   RunEvent,
   RunState,
-  SendCliMessageRequest,
   SkillDefinition,
   StudioOverview,
   UpdateWorkflowRequest,
@@ -152,13 +148,9 @@ export function App() {
   const [flowViewport, setFlowViewport] = useState<Viewport>(INITIAL_FLOW_VIEWPORT);
   const [alignmentGuide, setAlignmentGuide] = useState<NodeAlignmentGuide>();
 
-  const [chatOpen, setChatOpen] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const [cliStatus, setCliStatus] = useState<CliProviderStatusResponse>();
-  const [chatSession, setChatSession] = useState<CliChatSession>();
-  const [chatMessages, setChatMessages] = useState<CliChatMessage[]>([]);
-  const [chatInput, setChatInput] = useState("");
-  const [includeChatContext, setIncludeChatContext] = useState(true);
-  const [chatError, setChatError] = useState<string>();
+  const [terminalError, setTerminalError] = useState<string>();
 
   const selectedNode = workflow?.nodes.find((node) => node.id === selectedNodeId);
   const nodeRunsByNodeId = useMemo(
@@ -240,18 +232,6 @@ export function App() {
     return status;
   }, []);
 
-  const refreshCliMessages = useCallback(async (sessionId: string) => {
-    const response = await fetch(`/api/cli/sessions/${sessionId}/messages`);
-    if (!response.ok) {
-      throw new Error(`Failed to read CLI messages: ${response.status}`);
-    }
-    setChatMessages((await response.json()) as CliChatMessage[]);
-  }, []);
-
-  const upsertChatMessage = useCallback((message: CliChatMessage) => {
-    setChatMessages((currentMessages) => upsertCliMessage(currentMessages, message));
-  }, []);
-
   useEffect(() => {
     void refreshOverview()
       .then((data) => {
@@ -265,7 +245,7 @@ export function App() {
   }, [refreshOverview, refreshWorkflow]);
 
   useEffect(() => {
-    void refreshCliStatus().catch((caught: unknown) => setChatError(readError(caught)));
+    void refreshCliStatus().catch((caught: unknown) => setTerminalError(readError(caught)));
     const intervalId = window.setInterval(() => {
       void refreshCliStatus().catch(() => undefined);
     }, 30_000);
@@ -284,44 +264,6 @@ export function App() {
     };
     return () => socket.close();
   }, [refreshRun, runState?.run.id]);
-
-  useEffect(() => {
-    if (!chatSession?.id) {
-      return;
-    }
-
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(`${protocol}//${window.location.host}/ws/cli/sessions/${chatSession.id}`);
-    socket.onmessage = (messageEvent) => {
-      const event = JSON.parse(String(messageEvent.data)) as CliStreamEvent;
-      if (event.type === "message_created" && event.message) {
-        upsertChatMessage(event.message);
-      }
-      if (event.type === "chunk" && event.messageId && event.content) {
-        setChatMessages((currentMessages) =>
-          currentMessages.map((message) =>
-            message.id === event.messageId ? { ...message, content: `${message.content}${event.content}` } : message
-          )
-        );
-      }
-      const nextStatus = event.status;
-      if (event.type === "status" && isCliChatStatus(nextStatus)) {
-        setChatSession((currentSession) =>
-          currentSession
-            ? { ...currentSession, status: nextStatus, lastError: event.error ?? currentSession.lastError }
-            : currentSession
-        );
-      }
-      if (event.type === "completed" || event.type === "cancelled" || event.type === "error") {
-        if (event.error) {
-          setChatError(event.error);
-        }
-        void refreshCliMessages(chatSession.id).catch((caught: unknown) => setChatError(readError(caught)));
-        void refreshCliStatus().catch(() => undefined);
-      }
-    };
-    return () => socket.close();
-  }, [chatSession?.id, refreshCliMessages, refreshCliStatus, upsertChatMessage]);
 
   useEffect(() => {
     if (!selectedArtifactId) {
@@ -808,97 +750,22 @@ export function App() {
     await refreshOverview();
   }
 
-  function buildCurrentCliContext(): CliChatContext {
-    return {
-      workflowId: workflow?.id,
-      workflowName: workflow?.name,
-      runId: runState?.run.id,
-      runStatus: runState?.run.status,
-      selectedNodeId,
-      selectedNodeName: selectedNode?.name,
-      contextNote,
-      localFiles: localFiles.map((file) => ({
-        name: file.name,
-        relativePath: file.relativePath,
-        size: file.size
-      }))
-    };
-  }
-
-  async function ensureChatSession(): Promise<CliChatSession> {
-    if (chatSession) {
-      return chatSession;
-    }
-    const response = await fetch("/api/cli/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ context: buildCurrentCliContext() })
-    });
-    if (!response.ok) {
-      throw new Error((await response.json()).error ?? "Failed to create CLI chat session.");
-    }
-    const session = (await response.json()) as CliChatSession;
-    setChatSession(session);
-    setChatMessages([]);
-    return session;
-  }
-
-  async function openChat() {
-    setChatOpen(true);
-    setChatError(undefined);
+  async function openTerminal() {
+    setTerminalOpen(true);
+    setTerminalError(undefined);
     try {
       await refreshCliStatus();
-      await ensureChatSession();
     } catch (caught) {
-      setChatError(readError(caught));
+      setTerminalError(readError(caught));
     }
   }
 
-  async function sendChatMessage() {
-    const content = chatInput.trim();
-    if (!content || chatSession?.status === "running") {
-      return;
-    }
-    setChatError(undefined);
+  async function refreshTerminalStatus() {
+    setTerminalError(undefined);
     try {
-      const status = await refreshCliStatus();
-      if (status.status !== "ready") {
-        throw new Error(status.message);
-      }
-      const session = await ensureChatSession();
-      setChatInput("");
-      const response = await fetch(`/api/cli/sessions/${session.id}/messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          content,
-          context: includeChatContext ? buildCurrentCliContext() : undefined
-        } satisfies SendCliMessageRequest)
-      });
-      if (!response.ok) {
-        throw new Error((await response.json()).error ?? "CLI chat request failed.");
-      }
-      const body = (await response.json()) as {
-        session: CliChatSession;
-        userMessage: CliChatMessage;
-        assistantMessage: CliChatMessage;
-      };
-      setChatSession(body.session);
-      upsertChatMessage(body.userMessage);
-      upsertChatMessage(body.assistantMessage);
+      await refreshCliStatus();
     } catch (caught) {
-      setChatError(readError(caught));
-      setChatInput(content);
-    }
-  }
-
-  async function stopChatRequest() {
-    if (!chatSession || chatSession.status !== "running") {
-      return;
-    }
-    const response = await fetch(`/api/cli/sessions/${chatSession.id}/stop`, { method: "POST" });
-    if (response.ok) {
-      setChatSession((await response.json()) as CliChatSession);
+      setTerminalError(readError(caught));
     }
   }
 
@@ -1037,20 +904,13 @@ export function App() {
         />
       ) : null}
 
-      <CliChatDock
-        open={chatOpen}
+      <CliTerminalDock
+        open={terminalOpen}
         cliStatus={cliStatus}
-        session={chatSession}
-        messages={chatMessages}
-        input={chatInput}
-        includeContext={includeChatContext}
-        error={chatError}
-        onOpen={() => void openChat()}
-        onClose={() => setChatOpen(false)}
-        onInputChange={setChatInput}
-        onIncludeContextChange={setIncludeChatContext}
-        onSend={() => void sendChatMessage()}
-        onStop={() => void stopChatRequest()}
+        error={terminalError}
+        onOpen={() => void openTerminal()}
+        onClose={() => setTerminalOpen(false)}
+        onRefreshStatus={() => void refreshTerminalStatus()}
       />
     </main>
   );
@@ -2269,95 +2129,208 @@ function Timeline({ events, onRefresh }: { events: RunEvent[]; onRefresh: () => 
   );
 }
 
-function CliChatDock(props: {
+function CliTerminalDock(props: {
   open: boolean;
   cliStatus?: CliProviderStatusResponse;
-  session?: CliChatSession;
-  messages: CliChatMessage[];
-  input: string;
-  includeContext: boolean;
   error?: string;
   onOpen: () => void;
   onClose: () => void;
-  onInputChange: (value: string) => void;
-  onIncludeContextChange: (value: boolean) => void;
-  onSend: () => void;
-  onStop: () => void;
+  onRefreshStatus: () => void;
 }) {
-  const isRunning = props.session?.status === "running";
-  const providerStatus = isRunning ? "running" : props.cliStatus?.status ?? "not_ready";
-  const canSend = props.input.trim().length > 0 && providerStatus === "ready" && !isRunning;
-  const statusMessage = isRunning ? "D_RD is running" : props.cliStatus?.message ?? "Checking D_RD connection...";
+  const terminalHostRef = useRef<HTMLDivElement>(null);
+  const terminalRef = useRef<XTermTerminal>();
+  const socketRef = useRef<WebSocket>();
+  const lastNotReadyMessageRef = useRef<string>();
+  const [connectionState, setConnectionState] = useState<"idle" | "connecting" | "connected" | "closed" | "error">("idle");
+  const providerStatus = connectionState === "connected" || connectionState === "connecting"
+    ? "running"
+    : props.cliStatus?.status ?? "not_ready";
+  const statusMessage = props.error ?? props.cliStatus?.message ?? "Checking D_RD connection...";
+  const canConnect = props.cliStatus?.status === "ready" && connectionState !== "connected" && connectionState !== "connecting";
+
+  const writeLine = useCallback((line = "") => {
+    terminalRef.current?.writeln(line);
+  }, []);
+
+  const writeOutput = useCallback((data: string) => {
+    terminalRef.current?.write(data);
+  }, []);
+
+  const disconnect = useCallback(() => {
+    const socket = socketRef.current;
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "interrupt" } satisfies CliTerminalInputEvent));
+    }
+    socket?.close();
+    socketRef.current = undefined;
+    setConnectionState("closed");
+    props.onRefreshStatus();
+  }, [props]);
+
+  const connect = useCallback(() => {
+    if (socketRef.current?.readyState === WebSocket.OPEN || socketRef.current?.readyState === WebSocket.CONNECTING) {
+      return;
+    }
+
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const socket = new WebSocket(`${protocol}//${window.location.host}/ws/cli/terminal`);
+    socketRef.current = socket;
+    setConnectionState("connecting");
+    writeLine("");
+    writeLine(`[${formatTerminalTime()}] connecting to D_RD terminal...`);
+
+    socket.onopen = () => {
+      setConnectionState("connected");
+    };
+
+    socket.onmessage = (messageEvent) => {
+      const event = JSON.parse(String(messageEvent.data)) as CliTerminalEvent;
+      if (event.type === "output" && event.data) {
+        writeOutput(event.data);
+      }
+      if (event.type === "status" && event.message) {
+        writeLine(`[${formatTerminalTime()}] ${event.message}`);
+      }
+      if (event.type === "error") {
+        setConnectionState("error");
+        writeLine("");
+        writeLine(event.data?.trimEnd() || `[${formatTerminalTime()}] ${event.message ?? "D_RD terminal error."}`);
+      }
+      if (event.type === "exit") {
+        setConnectionState(event.status === "error" ? "error" : "closed");
+        if (event.data) {
+          writeOutput(event.data);
+        }
+        props.onRefreshStatus();
+      }
+    };
+
+    socket.onerror = () => {
+      setConnectionState("error");
+      writeLine(`[${formatTerminalTime()}] D_RD terminal socket error.`);
+      props.onRefreshStatus();
+    };
+
+    socket.onclose = () => {
+      socketRef.current = undefined;
+      setConnectionState((current) => (current === "error" ? current : "closed"));
+      props.onRefreshStatus();
+    };
+  }, [props, writeLine, writeOutput]);
+
+  useEffect(() => {
+    if (!props.open || !terminalHostRef.current || terminalRef.current) {
+      return;
+    }
+
+    const terminal = new XTermTerminal({
+      convertEol: true,
+      cursorBlink: true,
+      fontFamily: "Consolas, 'Cascadia Mono', 'SFMono-Regular', monospace",
+      fontSize: 13,
+      lineHeight: 1.25,
+      theme: {
+        background: "#0b1020",
+        foreground: "#dbeafe",
+        cursor: "#93c5fd",
+        selectionBackground: "#334155"
+      }
+    });
+    const dataDisposable = terminal.onData((data) => {
+      const socket = socketRef.current;
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: "input", data } satisfies CliTerminalInputEvent));
+      }
+    });
+
+    terminal.open(terminalHostRef.current);
+    terminal.writeln("D_RD Terminal");
+    terminal.writeln("Direct terminal connection to the D_RD CLI.");
+    terminal.writeln("");
+    terminalRef.current = terminal;
+
+    return () => {
+      dataDisposable.dispose();
+      socketRef.current?.close();
+      socketRef.current = undefined;
+      terminal.dispose();
+      terminalRef.current = undefined;
+      lastNotReadyMessageRef.current = undefined;
+      setConnectionState("idle");
+    };
+  }, [props.open]);
+
+  useEffect(() => {
+    if (!props.open || !terminalRef.current) {
+      return;
+    }
+
+    if (props.cliStatus?.status === "ready" && connectionState === "idle") {
+      connect();
+      return;
+    }
+
+    if (props.cliStatus && props.cliStatus.status !== "ready" && connectionState === "idle") {
+      const message = props.error ?? props.cliStatus.message;
+      if (lastNotReadyMessageRef.current !== message) {
+        lastNotReadyMessageRef.current = message;
+        writeLine(`[${formatTerminalTime()}] ${message}`);
+        writeLine("Expected setup:");
+        writeLine("  cd vendor/D_RD");
+        writeLine("  bun install");
+        writeLine("  bun run build");
+        writeLine("");
+      }
+    }
+  }, [connect, connectionState, props.cliStatus, props.error, props.open, writeLine]);
 
   if (!props.open) {
     return (
-      <button className={`chat-launcher chat-launcher-${providerStatus}`} onClick={props.onOpen}>
-        <MessageSquare size={18} />
-        <span>CLI Chat</span>
+      <button className={`terminal-launcher terminal-launcher-${providerStatus}`} onClick={props.onOpen}>
+        <Terminal size={18} />
+        <span>D_RD Terminal</span>
+        <strong>{providerStatus.replace("_", " ")}</strong>
       </button>
     );
   }
 
   return (
-    <section className="cli-chat-dock">
-      <header className="cli-chat-header">
-        <div className="cli-chat-title">
+    <section className="cli-terminal-dock">
+      <header className="cli-terminal-header">
+        <div className="cli-terminal-title">
           <div className="chat-mark">
             <Terminal size={17} />
           </div>
           <div>
-            <h2>CLI Chat</h2>
+            <h2>D_RD Terminal</h2>
             <p>{statusMessage}</p>
           </div>
         </div>
-        <div className="cli-chat-actions">
+        <div className="cli-terminal-actions">
           <span className={`cli-status cli-status-${providerStatus}`}>{providerStatus.replace("_", " ")}</span>
-          <button className="icon-button" title="Collapse chat" onClick={props.onClose}>
+          <button className="icon-button" title="Refresh terminal status" onClick={props.onRefreshStatus}>
+            <RefreshCw size={16} />
+          </button>
+          <button className="icon-button" title="Clear terminal" onClick={() => terminalRef.current?.clear()}>
+            <Trash2 size={16} />
+          </button>
+          {connectionState === "connected" || connectionState === "connecting" ? (
+            <button className="icon-button stop-chat" title="Disconnect terminal" onClick={disconnect}>
+              <Square size={15} />
+            </button>
+          ) : (
+            <button className="primary-button compact" disabled={!canConnect} onClick={connect}>
+              <Play size={15} />
+              Connect
+            </button>
+          )}
+          <button className="icon-button" title="Collapse terminal" onClick={props.onClose}>
             <ChevronDown size={16} />
           </button>
         </div>
       </header>
-      <div className="cli-chat-messages">
-        {props.messages.length === 0 ? (
-          <div className="cli-chat-empty">
-            <Bot size={21} />
-            <p>Ask D_RD about the current Studio context.</p>
-          </div>
-        ) : (
-          props.messages.map((message) => (
-            <article key={message.id} className={`cli-message cli-message-${message.role}`}>
-              <div className="cli-message-meta">
-                <span>{message.role}</span>
-                <time>{formatChatTime(message.createdAt)}</time>
-              </div>
-              {message.content ? <ReactMarkdown>{message.content}</ReactMarkdown> : <p className="muted">Waiting...</p>}
-            </article>
-          ))
-        )}
-      </div>
-      {props.error ? <div className="chat-error">{props.error}</div> : null}
-      <footer className="cli-chat-footer">
-        <label className="context-toggle">
-          <input
-            type="checkbox"
-            checked={props.includeContext}
-            onChange={(event) => props.onIncludeContextChange(event.target.checked)}
-          />
-          Include workflow context
-        </label>
-        <div className="chat-input-row">
-          <textarea value={props.input} onChange={(event) => props.onInputChange(event.target.value)} />
-          {isRunning ? (
-            <button className="icon-button stop-chat" title="Stop CLI request" onClick={props.onStop}>
-              <Square size={15} />
-            </button>
-          ) : (
-            <button className="icon-button send-chat" title="Send message" disabled={!canSend} onClick={props.onSend}>
-              <Send size={15} />
-            </button>
-          )}
-        </div>
-      </footer>
+      {props.error ? <div className="terminal-error">{props.error}</div> : null}
+      <div className="cli-terminal-body" ref={terminalHostRef} />
     </section>
   );
 }
@@ -2560,20 +2533,8 @@ function readError(error: unknown): string {
   return error instanceof Error ? error.message : "Unexpected error.";
 }
 
-function upsertCliMessage(messages: CliChatMessage[], nextMessage: CliChatMessage): CliChatMessage[] {
-  const existingIndex = messages.findIndex((message) => message.id === nextMessage.id);
-  if (existingIndex === -1) {
-    return [...messages, nextMessage];
-  }
-  return messages.map((message, index) => (index === existingIndex ? nextMessage : message));
-}
-
-function isCliChatStatus(status: unknown): status is CliChatSession["status"] {
-  return status === "idle" || status === "running" || status === "completed" || status === "cancelled" || status === "error";
-}
-
-function formatChatTime(value: string): string {
-  return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+function formatTerminalTime(): string {
+  return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 function formatBytes(size: number): string {

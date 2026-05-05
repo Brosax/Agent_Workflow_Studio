@@ -542,6 +542,10 @@ export type CliStreamEventType =
   | "cancelled"
   | "error";
 
+export type CliTerminalConnectionStatus = "idle" | "connecting" | "running" | "closed" | "error";
+
+export type CliTerminalEventType = "status" | "output" | "error" | "exit";
+
 export interface CliContextFile {
   name: string;
   relativePath?: string;
@@ -605,6 +609,31 @@ export interface CliStreamEvent {
   status?: CliChatStatus | CliProviderStatus;
   error?: string;
   payload?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export type CliTerminalInputEvent =
+  | {
+      type: "input";
+      data: string;
+    }
+  | {
+      type: "resize";
+      cols: number;
+      rows: number;
+    }
+  | {
+      type: "interrupt";
+    };
+
+export interface CliTerminalEvent {
+  id: string;
+  type: CliTerminalEventType;
+  status?: CliTerminalConnectionStatus | CliProviderStatus;
+  data?: string;
+  message?: string;
+  exitCode?: number | null;
+  signal?: string | null;
   createdAt: string;
 }
 

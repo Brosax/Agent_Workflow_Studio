@@ -9,17 +9,15 @@ import { WebSocketServer } from "ws";
 import type {
   ApprovalRequest,
   CreateAgentRequest,
-  CreateCliSessionRequest,
   CreateRunRequest,
   CreateSkillRequest,
   CreateWorkflowRequest,
-  SendCliMessageRequest,
   UpdateAgentRequest,
   UpdateSkillRequest,
   UpdateWorkflowRequest
 } from "@agent-studio/shared";
 import { ArtifactManager } from "./artifactManager";
-import { CliChatService } from "./cliChatService";
+import { CliTerminalService } from "./cliTerminalService";
 import { apiPort, databasePath, ensureRuntimeDirs } from "./config";
 import { StudioDatabase } from "./db";
 import { RunEventBus } from "./eventBus";
@@ -45,7 +43,7 @@ if (db.listAgents().length === 0) {
 const eventBus = new RunEventBus();
 const artifactManager = new ArtifactManager(db);
 const orchestrator = new WorkflowOrchestrator(db, artifactManager, eventBus, workflowCatalog);
-const cliChatService = new CliChatService(db);
+const cliTerminalService = new CliTerminalService();
 
 const app = express();
 app.use(cors());
@@ -284,54 +282,7 @@ app.post("/api/runs/:runId/approval", async (request, response, next) => {
 
 app.get("/api/cli/status", (_request, response, next) => {
   try {
-    response.json(cliChatService.getStatus());
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post("/api/cli/sessions", (request, response, next) => {
-  try {
-    const body = request.body as CreateCliSessionRequest;
-    response.status(201).json(cliChatService.createSession(body.context));
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/cli/sessions/:sessionId", (request, response, next) => {
-  try {
-    response.json(cliChatService.getSession(request.params.sessionId));
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/cli/sessions/:sessionId/messages", (request, response, next) => {
-  try {
-    response.json(cliChatService.listMessages(request.params.sessionId));
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post("/api/cli/sessions/:sessionId/messages", async (request, response, next) => {
-  try {
-    const body = request.body as SendCliMessageRequest;
-    if (!body.content?.trim()) {
-      response.status(400).json({ error: "content is required." });
-      return;
-    }
-
-    response.status(202).json(await cliChatService.sendMessage(request.params.sessionId, body.content, body.context));
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post("/api/cli/sessions/:sessionId/stop", (request, response, next) => {
-  try {
-    response.json(cliChatService.stopSession(request.params.sessionId));
+    response.json(cliTerminalService.getStatus());
   } catch (error) {
     next(error);
   }
@@ -348,9 +299,9 @@ const wss = new WebSocketServer({ noServer: true });
 server.on("upgrade", (request, socket, head) => {
   const url = new URL(request.url ?? "", `http://${request.headers.host ?? "localhost"}`);
   const runMatch = url.pathname.match(/^\/ws\/runs\/([^/]+)$/);
-  const cliMatch = url.pathname.match(/^\/ws\/cli\/sessions\/([^/]+)$/);
+  const cliTerminalMatch = url.pathname === "/ws/cli/terminal";
 
-  if (!runMatch && !cliMatch) {
+  if (!runMatch && !cliTerminalMatch) {
     socket.destroy();
     return;
   }
@@ -372,18 +323,7 @@ server.on("upgrade", (request, socket, head) => {
       return;
     }
 
-    const sessionId = cliMatch?.[1] ?? "";
-    for (const event of cliChatService.historyEvents(sessionId)) {
-      ws.send(JSON.stringify(event));
-    }
-
-    const unsubscribe = cliChatService.subscribe(sessionId, (event) => {
-      if (ws.readyState === ws.OPEN) {
-        ws.send(JSON.stringify(event));
-      }
-    });
-
-    ws.on("close", unsubscribe);
+    cliTerminalService.connect(ws);
   });
 });
 
