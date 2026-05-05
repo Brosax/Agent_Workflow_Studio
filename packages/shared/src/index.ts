@@ -624,6 +624,9 @@ export type CliTerminalInputEvent =
     }
   | {
       type: "interrupt";
+    }
+  | {
+      type: "stop";
     };
 
 export interface CliTerminalEvent {

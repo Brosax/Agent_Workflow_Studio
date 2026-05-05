@@ -30,7 +30,6 @@ export class CliTerminalService {
     const bunAvailable = isCommandAvailable("bun");
     const distEntry = path.join(cliCorePath, "dist", "cli-node.js");
     const hasCliCore = existsSync(cliCorePath);
-    const hasDistEntry = existsSync(distEntry);
     const hasNodeModules = existsSync(path.join(cliCorePath, "node_modules"));
     const dependenciesInstalled = hasNodeModules;
 
@@ -56,16 +55,6 @@ export class CliTerminalService {
       };
     }
 
-    if (!hasDistEntry && !existsSync(path.join(cliCorePath, "src", "entrypoints", "cli.tsx"))) {
-      return {
-        status: "not_ready",
-        cliCorePath,
-        bunAvailable,
-        dependenciesInstalled,
-        message: "D_RD entrypoint was not found. Expected dist/cli-node.js."
-      };
-    }
-
     if (!target) {
       return {
         status: "not_ready",
@@ -73,7 +62,7 @@ export class CliTerminalService {
         bunAvailable,
         dependenciesInstalled,
         message: hasNodeModules
-          ? "D_RD build output is missing. Run `bun run build` inside vendor/D_RD."
+          ? "D_RD build output is missing. Expected dist/cli-node.js. Run `bun run build` inside vendor/D_RD."
           : "D_RD dependencies are missing. Run `bun install` then `bun run build` inside vendor/D_RD."
       };
     }
@@ -175,6 +164,15 @@ export class CliTerminalService {
       });
     });
 
+    child.stdin.on("error", (error) => {
+      this.sendToActive(active.id, {
+        type: "error",
+        status: "error",
+        message: `stdin error: ${error.message}`,
+        data: `\r\nstdin error: ${error.message}\r\n`
+      });
+    });
+
     child.on("error", (error) => {
       this.sendToActive(active.id, {
         type: "error",
@@ -253,7 +251,7 @@ export class CliTerminalService {
       return;
     }
 
-    if (event.type === "interrupt") {
+    if (event.type === "interrupt" || event.type === "stop") {
       active.closedByClient = true;
       active.child.kill();
     }
