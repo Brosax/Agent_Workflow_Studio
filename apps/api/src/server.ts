@@ -1,6 +1,7 @@
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import type { Dirent } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import cors from "cors";
 import express from "express";
@@ -420,7 +421,7 @@ async function findSkillFiles(root: string, depth: number): Promise<string[]> {
     return [];
   }
 
-  let entries: Awaited<ReturnType<typeof readdir>>;
+  let entries: Dirent<string>[];
   try {
     entries = await readdir(root, { withFileTypes: true });
   } catch {

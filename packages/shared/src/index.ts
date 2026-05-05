@@ -68,14 +68,161 @@ export interface WorkflowNodePosition {
   y: number;
 }
 
-export type WorkflowConnectionHandle = "main" | "true" | "false";
+export type WorkflowConnectionMode = "inputs" | "outputs";
+export type WorkflowConnectionType = "main";
+export type StandardWorkflowConnectionHandle = `${WorkflowConnectionMode}/${WorkflowConnectionType}/${number}`;
+export type LegacyWorkflowConnectionHandle = "main" | "true" | "false";
+export type WorkflowConnectionHandle = LegacyWorkflowConnectionHandle | StandardWorkflowConnectionHandle;
+
+export interface ParsedWorkflowConnectionHandle {
+  mode: WorkflowConnectionMode;
+  type: WorkflowConnectionType;
+  index: number;
+  handle: StandardWorkflowConnectionHandle;
+  legacy: boolean;
+  valid: boolean;
+}
+
+export interface WorkflowConnectionPort {
+  handle: StandardWorkflowConnectionHandle;
+  mode: WorkflowConnectionMode;
+  type: WorkflowConnectionType;
+  index: number;
+  label: string;
+  required?: boolean;
+  maxConnections?: number;
+}
+
+export interface WorkflowNodePorts {
+  inputs: WorkflowConnectionPort[];
+  outputs: WorkflowConnectionPort[];
+}
 
 export interface WorkflowConnection {
   id: string;
   source: string;
   target: string;
   sourceHandle?: WorkflowConnectionHandle;
-  targetHandle?: string;
+  targetHandle?: WorkflowConnectionHandle;
+}
+
+export function createConnectionHandle(
+  mode: WorkflowConnectionMode,
+  type: WorkflowConnectionType = "main",
+  index = 0
+): StandardWorkflowConnectionHandle {
+  return `${mode}/${type}/${index}` as StandardWorkflowConnectionHandle;
+}
+
+export function parseConnectionHandle(
+  handle: string | null | undefined,
+  fallbackMode: WorkflowConnectionMode = "outputs"
+): ParsedWorkflowConnectionHandle {
+  if (!handle || handle === "main") {
+    return {
+      mode: fallbackMode,
+      type: "main",
+      index: 0,
+      handle: createConnectionHandle(fallbackMode, "main", 0),
+      legacy: Boolean(handle),
+      valid: true
+    };
+  }
+
+  if (handle === "true" || handle === "false") {
+    const index = handle === "true" ? 0 : 1;
+    return {
+      mode: "outputs",
+      type: "main",
+      index,
+      handle: createConnectionHandle("outputs", "main", index),
+      legacy: true,
+      valid: true
+    };
+  }
+
+  const parts = handle.split("/");
+  const mode = parts[0] === "inputs" || parts[0] === "outputs" ? parts[0] : fallbackMode;
+  const type = parts[1] === "main" ? "main" : "main";
+  const index = Number(parts[2]);
+  const valid = parts.length === 3 && (parts[0] === "inputs" || parts[0] === "outputs") && parts[1] === "main" && Number.isInteger(index) && index >= 0;
+  const resolvedIndex = valid ? index : 0;
+
+  return {
+    mode,
+    type,
+    index: resolvedIndex,
+    handle: createConnectionHandle(mode, type, resolvedIndex),
+    legacy: false,
+    valid
+  };
+}
+
+export function normalizeConnectionHandle(
+  handle: string | null | undefined,
+  fallbackMode: WorkflowConnectionMode
+): StandardWorkflowConnectionHandle {
+  return parseConnectionHandle(handle, fallbackMode).handle;
+}
+
+export function createConnectionId(
+  source: string,
+  sourceHandle: string | null | undefined,
+  target: string,
+  targetHandle: string | null | undefined
+): string {
+  const normalizedSource = normalizeConnectionHandle(sourceHandle, "outputs");
+  const normalizedTarget = normalizeConnectionHandle(targetHandle, "inputs");
+  return `[${source}/${normalizedSource}][${target}/${normalizedTarget}]`;
+}
+
+export function normalizeWorkflowConnection(connection: WorkflowConnection): WorkflowConnection {
+  const sourceHandle = normalizeConnectionHandle(connection.sourceHandle, "outputs");
+  const targetHandle = normalizeConnectionHandle(connection.targetHandle, "inputs");
+  return {
+    ...connection,
+    id: connection.id || createConnectionId(connection.source, sourceHandle, connection.target, targetHandle),
+    sourceHandle,
+    targetHandle
+  };
+}
+
+export function normalizeWorkflowConnections(connections: WorkflowConnection[] = []): WorkflowConnection[] {
+  return connections.map(normalizeWorkflowConnection);
+}
+
+function port(mode: WorkflowConnectionMode, index: number, label: string, options: Omit<WorkflowConnectionPort, "handle" | "mode" | "type" | "index" | "label"> = {}): WorkflowConnectionPort {
+  return {
+    handle: createConnectionHandle(mode, "main", index),
+    mode,
+    type: "main",
+    index,
+    label,
+    ...options
+  };
+}
+
+export function getNodePorts(node: Pick<WorkflowNode, "type">): WorkflowNodePorts {
+  const mainInput = port("inputs", 0, "Input");
+  const mainOutput = port("outputs", 0, "Output");
+
+  switch (node.type) {
+    case "input":
+      return { inputs: [], outputs: [mainOutput] };
+    case "trigger":
+      return { inputs: [], outputs: [port("outputs", 0, "Start")] };
+    case "condition":
+      return {
+        inputs: [mainInput],
+        outputs: [port("outputs", 0, "True"), port("outputs", 1, "False")]
+      };
+    case "output":
+      return { inputs: [mainInput], outputs: [] };
+    case "report":
+      return { inputs: [mainInput], outputs: [mainOutput] };
+    default:
+      return { inputs: [mainInput], outputs: [mainOutput] };
+  }
 }
 
 export type TriggerMode = "manual";

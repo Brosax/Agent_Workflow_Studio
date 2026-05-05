@@ -3,9 +3,18 @@ import {
   parseWorkflowDefinition,
   topologicalSortNodes,
   validateWorkflowDefinition,
-  connectionsToDependsOn
+  connectionsToDependsOn,
+  getWorkflowConnections
 } from "../src/index";
-import type { WorkflowConnection, WorkflowDefinition, WorkflowNode } from "@agent-studio/shared";
+import {
+  createConnectionHandle,
+  createConnectionId,
+  getNodePorts,
+  parseConnectionHandle,
+  type WorkflowConnection,
+  type WorkflowDefinition,
+  type WorkflowNode
+} from "@agent-studio/shared";
 
 describe("workflow-core", () => {
   it("sorts nodes by dependency order", () => {
@@ -113,6 +122,47 @@ nodes:
 });
 
 describe("connections", () => {
+  it("normalizes legacy and standard connection handles", () => {
+    expect(parseConnectionHandle("main", "outputs")).toMatchObject({
+      handle: "outputs/main/0",
+      index: 0,
+      legacy: true,
+      valid: true
+    });
+    expect(parseConnectionHandle("true", "outputs")).toMatchObject({
+      handle: "outputs/main/0",
+      index: 0,
+      legacy: true,
+      valid: true
+    });
+    expect(parseConnectionHandle("false", "outputs")).toMatchObject({
+      handle: "outputs/main/1",
+      index: 1,
+      legacy: true,
+      valid: true
+    });
+    expect(parseConnectionHandle("inputs/main/0", "inputs")).toMatchObject({
+      handle: "inputs/main/0",
+      index: 0,
+      legacy: false,
+      valid: true
+    });
+  });
+
+  it("creates deterministic connection ids", () => {
+    expect(createConnectionId("a", "main", "b", undefined)).toBe("[a/outputs/main/0][b/inputs/main/0]");
+    expect(createConnectionId("cond", "false", "out", "main")).toBe("[cond/outputs/main/1][out/inputs/main/0]");
+  });
+
+  it("describes node ports by node type", () => {
+    expect(getNodePorts({ type: "input" }).inputs).toHaveLength(0);
+    expect(getNodePorts({ type: "condition" }).outputs.map((port) => port.handle)).toEqual([
+      createConnectionHandle("outputs", "main", 0),
+      createConnectionHandle("outputs", "main", 1)
+    ]);
+    expect(getNodePorts({ type: "output" }).outputs).toHaveLength(0);
+  });
+
   it("validates workflows with connections", () => {
     const workflow: WorkflowDefinition = {
       id: "conn-workflow",
@@ -127,11 +177,15 @@ describe("connections", () => {
       ],
       connections: [
         { id: "c1", source: "input", target: "agent", sourceHandle: "main" },
-        { id: "c2", source: "agent", target: "output", sourceHandle: "main" }
+        { id: "c2", source: "agent", target: "output", sourceHandle: "outputs/main/0", targetHandle: "inputs/main/0" }
       ]
     };
 
     expect(() => validateWorkflowDefinition(workflow)).not.toThrow();
+    expect(getWorkflowConnections(workflow)).toMatchObject([
+      { id: "c1", sourceHandle: "outputs/main/0", targetHandle: "inputs/main/0" },
+      { id: "c2", sourceHandle: "outputs/main/0", targetHandle: "inputs/main/0" }
+    ]);
   });
 
   it("rejects connections with missing source node", () => {
@@ -191,11 +245,11 @@ describe("connections", () => {
     expect(() => validateWorkflowDefinition(workflow)).toThrow(/self-loop/);
   });
 
-  it("rejects condition connections without true/false handle", () => {
+  it("rejects condition connections to a missing output index", () => {
     const workflow: WorkflowDefinition = {
       id: "cond-bad-handle",
       name: "Condition Bad Handle",
-      description: "Condition without handle",
+      description: "Condition with invalid output handle",
       version: 1,
       inputs: {},
       nodes: [
@@ -205,11 +259,11 @@ describe("connections", () => {
       ],
       connections: [
         { id: "c1", source: "input", target: "cond" },
-        { id: "c2", source: "cond", target: "output", sourceHandle: "main" }
+        { id: "c2", source: "cond", target: "output", sourceHandle: "outputs/main/2" }
       ]
     };
 
-    expect(() => validateWorkflowDefinition(workflow)).toThrow(/sourceHandle "true" or "false"/);
+    expect(() => validateWorkflowDefinition(workflow)).toThrow(/missing source output port/);
   });
 
   it("accepts condition connections with true/false handles", () => {
@@ -255,6 +309,23 @@ describe("connections", () => {
     expect(result[2].depends_on).toEqual(["agent"]);
   });
 
+  it("merges connection dependencies with existing depends_on", () => {
+    const nodes: WorkflowNode[] = [
+      { id: "input", type: "input", name: "Input" },
+      { id: "prep", type: "agent", name: "Prep" },
+      { id: "agent", type: "agent", name: "Agent", depends_on: ["prep"] },
+      { id: "output", type: "output", name: "Output" }
+    ];
+    const connections: WorkflowConnection[] = [
+      { id: "c1", source: "input", target: "agent", sourceHandle: "main" },
+      { id: "c2", source: "agent", target: "output", sourceHandle: "main" }
+    ];
+
+    const result = connectionsToDependsOn(nodes, connections);
+    expect(result.find((node) => node.id === "agent")?.depends_on).toEqual(["prep", "input"]);
+    expect(result.find((node) => node.id === "output")?.depends_on).toEqual(["agent"]);
+  });
+
   it("rejects invalid sourceHandle values", () => {
     const workflow: WorkflowDefinition = {
       id: "bad-handle-val",
@@ -272,6 +343,78 @@ describe("connections", () => {
     };
 
     expect(() => validateWorkflowDefinition(workflow)).toThrow(/invalid sourceHandle/);
+  });
+
+  it("rejects target handles that are not target input ports", () => {
+    const workflow: WorkflowDefinition = {
+      id: "bad-target-port",
+      name: "Bad Target Port",
+      description: "Invalid target port",
+      version: 1,
+      inputs: {},
+      nodes: [
+        { id: "input", type: "input", name: "Input" },
+        { id: "output", type: "output", name: "Output" }
+      ],
+      connections: [
+        { id: "c1", source: "input", target: "output", sourceHandle: "main", targetHandle: "outputs/main/0" }
+      ]
+    };
+
+    expect(() => validateWorkflowDefinition(workflow)).toThrow(/missing target input port/);
+  });
+
+  it("rejects source handles that are not source output ports", () => {
+    const workflow: WorkflowDefinition = {
+      id: "bad-source-port",
+      name: "Bad Source Port",
+      description: "Output node cannot be a source",
+      version: 1,
+      inputs: {},
+      nodes: [
+        { id: "input", type: "input", name: "Input" },
+        { id: "output", type: "output", name: "Output" },
+        { id: "agent", type: "agent", name: "Agent" }
+      ],
+      connections: [
+        { id: "c1", source: "output", target: "agent", sourceHandle: "main" },
+        { id: "c2", source: "agent", target: "output", sourceHandle: "main" }
+      ]
+    };
+
+    expect(() => validateWorkflowDefinition(workflow)).toThrow(/missing source output port/);
+  });
+
+  it("rejects duplicate connection ids and duplicate endpoint pairs", () => {
+    const duplicateId: WorkflowDefinition = {
+      id: "dup-id",
+      name: "Duplicate ID",
+      description: "Duplicate connection id",
+      version: 1,
+      inputs: {},
+      nodes: [
+        { id: "input", type: "input", name: "Input" },
+        { id: "agent", type: "agent", name: "Agent" },
+        { id: "output", type: "output", name: "Output" }
+      ],
+      connections: [
+        { id: "same", source: "input", target: "agent" },
+        { id: "same", source: "agent", target: "output" }
+      ]
+    };
+
+    const duplicatePair: WorkflowDefinition = {
+      ...duplicateId,
+      id: "dup-pair",
+      connections: [
+        { id: "c1", source: "input", target: "agent" },
+        { id: "c2", source: "input", target: "agent", sourceHandle: "outputs/main/0", targetHandle: "inputs/main/0" },
+        { id: "c3", source: "agent", target: "output" }
+      ]
+    };
+
+    expect(() => validateWorkflowDefinition(duplicateId)).toThrow(/Duplicate connection id/);
+    expect(() => validateWorkflowDefinition(duplicatePair)).toThrow(/Duplicate connection/);
   });
 
   it("topological sort works with connections", () => {

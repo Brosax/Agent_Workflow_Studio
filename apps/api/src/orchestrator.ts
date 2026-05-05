@@ -1,10 +1,13 @@
 import { readFileSync } from "node:fs";
 import { MockAgentProvider, OpenAIResponsesProvider, type AgentProvider } from "@agent-studio/agent-core";
 import {
+  createConnectionHandle,
   DEFAULT_USER_ID,
+  normalizeConnectionHandle,
   type ApprovalRequest,
   type AgentArtifactOutput,
   type ArtifactWithContent,
+  type NodeRunStatus,
   type OutputFormat,
   type RunEvent,
   type RunEventType,
@@ -14,11 +17,11 @@ import {
   type WorkflowDefinition,
   type WorkflowNode
 } from "@agent-studio/shared";
-import { topologicalSortNodes, getWorkflowConnections } from "@agent-studio/workflow-core";
+import { connectionsToDependsOn, topologicalSortNodes, getWorkflowConnections } from "@agent-studio/workflow-core";
 import { ArtifactManager } from "./artifactManager";
 import { StudioDatabase } from "./db";
 import { RunEventBus } from "./eventBus";
-import { NODE_RUNNERS, getConditionSelectedHandle, type NodeRunnerContext } from "./nodeRunners";
+import { NODE_RUNNERS, type NodeRunnerContext } from "./nodeRunners";
 import { WorkflowCatalog } from "./workflows";
 
 export class WorkflowOrchestrator {
@@ -37,7 +40,8 @@ export class WorkflowOrchestrator {
 
   async createRun(workflowId: string, inputPayload: RunInputPayload): Promise<RunState> {
     const workflow = this.workflowCatalog.loadWorkflow(workflowId);
-    const orderedNodes = topologicalSortNodes(workflow.nodes);
+    const runnableWorkflow = materializeRuntimeWorkflow(workflow);
+    const orderedNodes = topologicalSortNodes(runnableWorkflow.nodes);
     const run = this.db.createRun({
       id: crypto.randomUUID(),
       workflowId: workflow.id,
@@ -132,8 +136,9 @@ export class WorkflowOrchestrator {
     }
 
     const workflow = this.workflowCatalog.loadWorkflow(run.workflowId);
-    const orderedNodes = topologicalSortNodes(workflow.nodes);
-    const connections = getWorkflowConnections(workflow);
+    const runnableWorkflow = materializeRuntimeWorkflow(workflow);
+    const orderedNodes = topologicalSortNodes(runnableWorkflow.nodes);
+    const connections = getWorkflowConnections(runnableWorkflow);
 
     for (const node of orderedNodes) {
       const nodeRun = this.db.getNodeRun(runId, node.id);
@@ -141,13 +146,13 @@ export class WorkflowOrchestrator {
         continue;
       }
 
-      if (!this.isNodeActive(runId, workflow, node, connections)) {
+      if (!this.isNodeActive(runId, runnableWorkflow, node, connections)) {
         this.db.updateNodeStatus(nodeRun.id, "skipped");
         this.emit(runId, "node_skipped", `${node.name} skipped (inactive branch).`, { nodeId: node.id });
         continue;
       }
 
-      this.assertDependenciesSucceeded(runId, workflow, node);
+      this.assertDependenciesSucceeded(runId, runnableWorkflow, node);
 
       if (node.type === "approval") {
         this.requestApproval(runId, node);
@@ -156,11 +161,11 @@ export class WorkflowOrchestrator {
 
       const runner = NODE_RUNNERS[node.type];
       if (runner) {
-        const upstreamArtifacts = await this.readUpstreamArtifacts(runId, workflow, node, connections);
+        const upstreamArtifacts = await this.readUpstreamArtifacts(runId, runnableWorkflow, node, connections);
         const ctx: NodeRunnerContext = {
           runId,
           node,
-          workflow,
+          workflow: runnableWorkflow,
           db: this.db,
           artifactManager: this.artifactManager,
           eventBus: this.eventBus,
@@ -170,7 +175,7 @@ export class WorkflowOrchestrator {
 
         if (node.type === "condition") {
           await runner(ctx);
-          this.markInactiveConditionBranches(runId, workflow, node, connections);
+          this.markInactiveConditionBranches(runId, runnableWorkflow, node, connections);
           continue;
         }
 
@@ -201,33 +206,73 @@ export class WorkflowOrchestrator {
     node: WorkflowNode,
     connections: WorkflowConnection[]
   ): boolean {
-    const incomingConnections = connections.filter((c) => c.target === node.id);
-    if (incomingConnections.length === 0) {
+    const incomingDependencies = this.getIncomingDependencyStates(runId, workflow, node, connections);
+    if (incomingDependencies.length === 0) {
       return true;
+    }
+
+    const activeDependencies = incomingDependencies.filter((dependency) => dependency.active);
+    if (activeDependencies.length === 0) {
+      return false;
+    }
+
+    const activeSucceeded = activeDependencies.some((dependency) => dependency.status === "succeeded");
+    const activeSettled = activeDependencies.every((dependency) =>
+      dependency.status === "succeeded" || dependency.status === "skipped"
+    );
+    if (!activeSettled) {
+      return true;
+    }
+
+    return activeSucceeded;
+  }
+
+  private getIncomingDependencyStates(
+    runId: string,
+    workflow: WorkflowDefinition,
+    node: WorkflowNode,
+    connections: WorkflowConnection[]
+  ): IncomingDependencyState[] {
+    const states = new Map<string, IncomingDependencyState>();
+    const incomingConnections = connections.filter((candidate) => candidate.target === node.id);
+    const connectedSources = new Set(incomingConnections.map((conn) => conn.source));
+
+    for (const dependencyId of node.depends_on ?? []) {
+      if (connectedSources.has(dependencyId)) {
+        continue;
+      }
+      states.set(dependencyId, {
+        nodeId: dependencyId,
+        status: this.db.getNodeRun(runId, dependencyId).status,
+        active: true
+      });
     }
 
     for (const conn of incomingConnections) {
-      if (!conn.sourceHandle || conn.sourceHandle === "main") {
-        return true;
-      }
+      const existing = states.get(conn.source);
+      const active = this.isConnectionActive(runId, workflow, conn);
+      states.set(conn.source, {
+        nodeId: conn.source,
+        status: this.db.getNodeRun(runId, conn.source).status,
+        active: existing ? existing.active || active : active
+      });
+    }
 
-      const sourceNode = workflow.nodes.find((n) => n.id === conn.source);
-      if (sourceNode?.type === "condition") {
-        const sourceRun = this.db.getNodeRun(runId, conn.source);
-        if (sourceRun.status === "skipped") {
-          continue;
-        }
-        const selectedHandle = this.getConditionBranch(runId, workflow, sourceNode);
-        if (conn.sourceHandle === selectedHandle) {
-          return true;
-        }
-        continue;
-      }
+    return [...states.values()];
+  }
 
+  private isConnectionActive(runId: string, workflow: WorkflowDefinition, conn: WorkflowConnection): boolean {
+    const sourceNode = workflow.nodes.find((node) => node.id === conn.source);
+    if (sourceNode?.type !== "condition") {
       return true;
     }
 
-    return false;
+    const sourceRun = this.db.getNodeRun(runId, conn.source);
+    if (sourceRun.status === "skipped") {
+      return false;
+    }
+
+    return normalizeConnectionHandle(conn.sourceHandle, "outputs") === this.getConditionBranchHandle(runId, workflow, sourceNode);
   }
 
   private getConditionBranch(runId: string, workflow: WorkflowDefinition, conditionNode: WorkflowNode): "true" | "false" {
@@ -248,21 +293,27 @@ export class WorkflowOrchestrator {
     return "true";
   }
 
+  private getConditionBranchHandle(runId: string, workflow: WorkflowDefinition, conditionNode: WorkflowNode): string {
+    return this.getConditionBranch(runId, workflow, conditionNode) === "true"
+      ? createConnectionHandle("outputs", "main", 0)
+      : createConnectionHandle("outputs", "main", 1);
+  }
+
   private markInactiveConditionBranches(
     runId: string,
     workflow: WorkflowDefinition,
     conditionNode: WorkflowNode,
     connections: WorkflowConnection[]
   ): void {
-    const selectedHandle = this.getConditionBranch(runId, workflow, conditionNode);
+    const selectedHandle = this.getConditionBranchHandle(runId, workflow, conditionNode);
     const outgoingConnections = connections.filter((c) => c.source === conditionNode.id);
 
     for (const conn of outgoingConnections) {
-      if (conn.sourceHandle && conn.sourceHandle !== selectedHandle) {
+      if (normalizeConnectionHandle(conn.sourceHandle, "outputs") !== selectedHandle) {
         const targetNode = workflow.nodes.find((n) => n.id === conn.target);
         if (targetNode) {
           const targetRun = this.db.getNodeRun(runId, targetNode.id);
-          if (targetRun.status === "pending") {
+          if (targetRun.status === "pending" && !this.isNodeActive(runId, workflow, targetNode, connections)) {
             this.db.updateNodeStatus(targetRun.id, "skipped");
             this.emit(runId, "node_skipped", `${targetNode.name} skipped (inactive branch).`, { nodeId: targetNode.id });
           }
@@ -429,6 +480,24 @@ export class WorkflowOrchestrator {
     this.eventBus.publish(event);
     return event;
   }
+}
+
+function materializeRuntimeWorkflow(workflow: WorkflowDefinition): WorkflowDefinition {
+  const connections = getWorkflowConnections(workflow);
+  if (connections.length === 0) {
+    return workflow;
+  }
+  return {
+    ...workflow,
+    connections,
+    nodes: connectionsToDependsOn(workflow.nodes, connections)
+  };
+}
+
+interface IncomingDependencyState {
+  nodeId: string;
+  status: NodeRunStatus;
+  active: boolean;
 }
 
 function delay(ms: number): Promise<void> {

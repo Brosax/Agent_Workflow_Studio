@@ -6,6 +6,7 @@ import type {
   WorkflowDefinition,
   WorkflowSummary
 } from "@agent-studio/shared";
+import { normalizeWorkflowConnections } from "@agent-studio/shared";
 import { parseWorkflowDefinition, validateWorkflowDefinition } from "@agent-studio/workflow-core";
 import { workflowsDir } from "./config";
 import { StudioDatabase } from "./db";
@@ -51,7 +52,10 @@ export class WorkflowCatalog {
     const workflow = {
       ...request.workflow,
       id: workflowId,
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
+      connections: request.workflow.connections
+        ? normalizeWorkflowConnections(request.workflow.connections)
+        : request.workflow.connections
     };
     validateWorkflowDefinition(workflow);
     return this.db.upsertWorkflow(workflow);

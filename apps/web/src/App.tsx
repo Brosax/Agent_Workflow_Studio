@@ -2,20 +2,25 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import ReactMarkdown from "react-markdown";
 import {
   Background,
+  BaseEdge,
   Controls,
+  EdgeLabelRenderer,
   Handle,
   MiniMap,
   Position,
   ReactFlow,
-  addEdge,
+  getBezierPath,
   useEdgesState,
   useNodesState,
   type Connection,
-  type Edge,
+  type EdgeProps,
   type Node,
   type NodeProps,
   type OnEdgesChange,
-  type OnNodesChange
+  type OnNodeDrag,
+  type OnNodesChange,
+  type ReactFlowInstance,
+  type Viewport
 } from "@xyflow/react";
 import {
   AlertTriangle,
@@ -67,14 +72,47 @@ import type {
   StudioOverview,
   UpdateWorkflowRequest,
   WorkflowDefinition,
+  WorkflowConnection,
   WorkflowNode as WorkflowNodeDefinition,
+  WorkflowNodePorts,
   WorkflowNodeType,
   WorkflowSummary
 } from "@agent-studio/shared";
+import {
+  createConnectionId,
+  getNodePorts,
+  normalizeConnectionHandle,
+  normalizeWorkflowConnection
+} from "@agent-studio/shared";
+import {
+  dependsOnToEdges,
+  edgeToWorkflowConnection,
+  reactFlowConnectionToWorkflowConnection,
+  workflowConnectionToEdge,
+  workflowConnectionsToEdges,
+  type WorkflowEdge
+} from "./canvasConnectionUtils";
+import {
+  WORKFLOW_SNAP_GRID,
+  findNodeAlignmentSnap,
+  getWorkflowLayoutPositions,
+  resolveNodeCollision,
+  type NodeAlignmentGuide,
+  type WorkflowLayoutKind
+} from "./workflowLayout";
 
 const DEFAULT_CONTEXT_NOTE = "Run this workflow against the selected local files.";
 const MAX_FILE_BYTES = 220_000;
+const INITIAL_FLOW_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 1 };
 const nodeTypes = { workflow: WorkflowNodeCard };
+const edgeTypes = { workflow: WorkflowConnectionEdge };
+const LAYOUT_MENU_OPTIONS: Array<{ kind: WorkflowLayoutKind; label: string }> = [
+  { kind: "horizontal", label: "Horizontal" },
+  { kind: "vertical", label: "Vertical" },
+  { kind: "grid", label: "Grid" },
+  { kind: "compact-horizontal", label: "Compact H" },
+  { kind: "compact-vertical", label: "Compact V" }
+];
 
 type Page = "home" | "builder" | "agents" | "skills";
 
@@ -84,6 +122,7 @@ type WorkflowNodeData = {
   status: NodeRunStatus;
   artifactCount: number;
   description?: string;
+  ports: WorkflowNodePorts;
 };
 
 export function App() {
@@ -104,8 +143,14 @@ export function App() {
   const [viewMode, setViewMode] = useState<"preview" | "raw">("preview");
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [isSidebarHidden, setIsSidebarHidden] = useState(false);
+  const [isDetailsPanelOpen, setIsDetailsPanelOpen] = useState(true);
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState<Node<WorkflowNodeData>>([]);
-  const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState<WorkflowEdge>([]);
+  const [pendingInsertEdgeId, setPendingInsertEdgeId] = useState<string>();
+  const [flowInstance, setFlowInstance] = useState<ReactFlowInstance<Node<WorkflowNodeData>, WorkflowEdge>>();
+  const [flowViewport, setFlowViewport] = useState<Viewport>(INITIAL_FLOW_VIEWPORT);
+  const [alignmentGuide, setAlignmentGuide] = useState<NodeAlignmentGuide>();
 
   const [chatOpen, setChatOpen] = useState(false);
   const [cliStatus, setCliStatus] = useState<CliProviderStatusResponse>();
@@ -122,6 +167,31 @@ export function App() {
   );
   const artifactsByNodeId = useMemo(() => groupArtifactsByNode(runState?.artifacts ?? []), [runState?.artifacts]);
   const selectedNodeArtifacts = selectedNode ? artifactsByNodeId.get(selectedNode.id) ?? [] : [];
+
+  const deleteEdge = useCallback(
+    (edgeId: string) => {
+      setFlowEdges((edges) => edges.filter((edge) => edge.id !== edgeId));
+      setWorkflow((current) => {
+        if (!current) {
+          return current;
+        }
+        const connections = getWorkflowDisplayConnections(current).filter(
+          (connection) => createConnectionId(connection.source, connection.sourceHandle, connection.target, connection.targetHandle) !== edgeId
+        );
+        return {
+          ...current,
+          nodes: applyConnectionDependencies(current.nodes, connections),
+          connections
+        };
+      });
+    },
+    [setFlowEdges]
+  );
+
+  const beginInsertOnEdge = useCallback((edgeId: string) => {
+    setPendingInsertEdgeId(edgeId);
+    setError(undefined);
+  }, []);
 
   const refreshOverview = useCallback(async () => {
     const response = await fetch("/api/studio/overview");
@@ -282,32 +352,19 @@ export function App() {
           nodeType: node.type,
           status: nodeRunsByNodeId.get(node.id)?.status ?? "pending",
           artifactCount: artifactsByNodeId.get(node.id)?.length ?? 0,
-          description: node.description
+          description: node.description,
+          ports: getNodePorts(node)
         }
       }))
     );
 
+    const edgeOptions = { nodeRunsByNodeId, onDeleteEdge: deleteEdge, onInsertEdge: beginInsertOnEdge };
     setFlowEdges(
-      workflow.connections
-        ? workflow.connections.map((conn) => ({
-            id: conn.id,
-            source: conn.source,
-            target: conn.target,
-            sourceHandle: conn.sourceHandle === "main" ? undefined : conn.sourceHandle,
-            animated: nodeRunsByNodeId.get(conn.target)?.status === "running",
-            style: { stroke: "#6b7280", strokeWidth: 1.5 }
-          }))
-        : workflow.nodes.flatMap((node) =>
-            (node.depends_on ?? []).map((dependency) => ({
-              id: `${dependency}-${node.id}`,
-              source: dependency,
-              target: node.id,
-              animated: nodeRunsByNodeId.get(node.id)?.status === "running",
-              style: { stroke: "#6b7280", strokeWidth: 1.5 }
-            }))
-          )
+      workflow.connections?.length
+        ? workflowConnectionsToEdges(workflow, edgeOptions)
+        : dependsOnToEdges(workflow, edgeOptions)
     );
-  }, [artifactsByNodeId, nodeRunsByNodeId, setFlowEdges, setFlowNodes, workflow]);
+  }, [artifactsByNodeId, beginInsertOnEdge, deleteEdge, nodeRunsByNodeId, setFlowEdges, setFlowNodes, workflow]);
 
   async function createWorkflow(template: "blank" | "code-review" = "blank") {
     setIsBusy(true);
@@ -397,9 +454,77 @@ export function App() {
     }
     const id = uniqueNodeId(type, workflow.nodes);
     const previousNode = selectedNode ?? workflow.nodes[workflow.nodes.length - 1];
-    const node = createNode(type, id, previousNode?.id);
-    setWorkflow({ ...workflow, nodes: [...workflow.nodes, node] });
+    const baseNode = createNode(type, id);
+    const currentConnections = flowEdges.map(edgeToWorkflowConnection);
+
+    if (pendingInsertEdgeId) {
+      const edge = flowEdges.find((candidate) => candidate.id === pendingInsertEdgeId);
+      const inputPort = getNodePorts(baseNode).inputs[0];
+      const outputPort = getNodePorts(baseNode).outputs[0];
+      if (!edge || !inputPort || !outputPort) {
+        setError("Only nodes with both input and output ports can be inserted on an existing connection.");
+        setPendingInsertEdgeId(undefined);
+        return;
+      }
+
+      const sourcePosition = flowNodes.find((node) => node.id === edge.source)?.position;
+      const targetPosition = flowNodes.find((node) => node.id === edge.target)?.position;
+      const node = {
+        ...baseNode,
+        depends_on: [edge.source],
+        position: sourcePosition && targetPosition
+          ? { x: (sourcePosition.x + targetPosition.x) / 2, y: (sourcePosition.y + targetPosition.y) / 2 + 90 }
+          : baseNode.position
+      };
+      const nextNodes = [...workflow.nodes, node];
+      const sourceHandle = normalizeConnectionHandle(edge.sourceHandle, "outputs");
+      const targetHandle = normalizeConnectionHandle(edge.targetHandle, "inputs");
+      const nextConnections = currentConnections
+        .filter((connection) => connection.id !== pendingInsertEdgeId)
+        .concat([
+          {
+            id: createConnectionId(edge.source, sourceHandle, node.id, inputPort.handle),
+            source: edge.source,
+            target: node.id,
+            sourceHandle,
+            targetHandle: inputPort.handle
+          },
+          {
+            id: createConnectionId(node.id, outputPort.handle, edge.target, targetHandle),
+            source: node.id,
+            target: edge.target,
+            sourceHandle: outputPort.handle,
+            targetHandle
+          }
+        ]);
+      setWorkflow({ ...workflow, nodes: applyConnectionDependencies(nextNodes, nextConnections), connections: nextConnections });
+      setPendingInsertEdgeId(undefined);
+      setSelectedNodeId(id);
+      setIsDetailsPanelOpen(true);
+      return;
+    }
+
+    const inputPort = getNodePorts(baseNode).inputs[0];
+    const previousOutputPort = previousNode ? getNodePorts(previousNode).outputs[0] : undefined;
+    const node = {
+      ...baseNode,
+      depends_on: previousNode && inputPort && previousOutputPort ? [previousNode.id] : [],
+      position: previousNode?.position ? { x: previousNode.position.x + 300, y: previousNode.position.y } : baseNode.position
+    };
+    const nextConnections = [...currentConnections];
+    if (previousNode && inputPort && previousOutputPort) {
+      nextConnections.push({
+        id: createConnectionId(previousNode.id, previousOutputPort.handle, node.id, inputPort.handle),
+        source: previousNode.id,
+        target: node.id,
+        sourceHandle: previousOutputPort.handle,
+        targetHandle: inputPort.handle
+      });
+    }
+    const nextNodes = [...workflow.nodes, node];
+    setWorkflow({ ...workflow, nodes: applyConnectionDependencies(nextNodes, nextConnections), connections: nextConnections });
     setSelectedNodeId(id);
+    setIsDetailsPanelOpen(true);
   }
 
   function deleteSelectedNode() {
@@ -412,27 +537,111 @@ export function App() {
         ...node,
         depends_on: (node.depends_on ?? []).filter((dependency) => dependency !== selectedNode.id)
       }));
-    setWorkflow({ ...workflow, nodes });
+    setFlowEdges((edges) => edges.filter((edge) => edge.source !== selectedNode.id && edge.target !== selectedNode.id));
+    setWorkflow({
+      ...workflow,
+      nodes: applyConnectionDependencies(
+        nodes,
+        (workflow.connections?.length ? workflow.connections : flowEdges.map(edgeToWorkflowConnection)).filter(
+          (connection) => connection.source !== selectedNode.id && connection.target !== selectedNode.id
+        )
+      ),
+      connections: (workflow.connections?.length ? workflow.connections : flowEdges.map(edgeToWorkflowConnection)).filter(
+        (connection) => connection.source !== selectedNode.id && connection.target !== selectedNode.id
+      )
+    });
     setSelectedNodeId(nodes[0]?.id);
   }
 
   const onConnect = useCallback(
-    (connection: Connection) => setFlowEdges((edges) => addEdge(connection, edges)),
-    [setFlowEdges]
+    (connection: Connection) => {
+      if (!workflow) {
+        return;
+      }
+
+      const result = reactFlowConnectionToWorkflowConnection(connection, workflow);
+      if (!result.connection) {
+        setError(result.error ?? "Connection is not valid.");
+        return;
+      }
+      const workflowConnection = result.connection;
+
+      const nextEdge = workflowConnectionToEdge(workflow, workflowConnection, {
+        nodeRunsByNodeId,
+        onDeleteEdge: deleteEdge,
+        onInsertEdge: beginInsertOnEdge
+      });
+      if (flowEdges.some((edge) => edge.id === nextEdge.id)) {
+        setError("That connection already exists.");
+        return;
+      }
+      setError(undefined);
+      setFlowEdges((edges) => [...edges, nextEdge]);
+      setWorkflow((current) => {
+        if (!current) {
+          return current;
+        }
+        const connections = [...getWorkflowDisplayConnections(current), workflowConnection];
+        return {
+          ...current,
+          nodes: applyConnectionDependencies(current.nodes, connections),
+          connections
+        };
+      });
+    },
+    [beginInsertOnEdge, deleteEdge, flowEdges, nodeRunsByNodeId, setFlowEdges, workflow]
   );
 
-  function autoLayoutNodes() {
+  function autoLayoutNodes(kind: WorkflowLayoutKind) {
     if (!workflow) {
       return;
     }
-    const positions = getAutoLayoutPositions(workflow.nodes);
+    const workflowForLayout = materializeWorkflowFromCanvas(workflow, flowNodes, flowEdges);
+    const positions = getWorkflowLayoutPositions(workflowForLayout, kind);
     setFlowNodes((currentNodes) =>
       currentNodes.map((node) => ({
         ...node,
         position: positions.get(node.id) ?? node.position
       }))
     );
+    window.setTimeout(() => {
+      void flowInstance?.fitView({ padding: 0.18, duration: 220 });
+    }, 0);
   }
+
+  const fitWorkflowView = useCallback(() => {
+    void flowInstance?.fitView({ padding: 0.18, duration: 220 });
+  }, [flowInstance]);
+
+  const onNodeDrag = useCallback<OnNodeDrag<Node<WorkflowNodeData>>>(
+    (_event, node, nodes) => {
+      const otherPositions = new Map(
+        nodes.filter((candidate) => candidate.id !== node.id).map((candidate) => [candidate.id, candidate.position])
+      );
+      const snap = findNodeAlignmentSnap(node.id, node.position, otherPositions);
+      setAlignmentGuide(snap.guide.vertical === undefined && snap.guide.horizontal === undefined ? undefined : snap.guide);
+    },
+    []
+  );
+
+  const onNodeDragStop = useCallback<OnNodeDrag<Node<WorkflowNodeData>>>(
+    (_event, node, nodes) => {
+      const otherPositions = new Map(
+        nodes.filter((candidate) => candidate.id !== node.id).map((candidate) => [candidate.id, candidate.position])
+      );
+      const snap = findNodeAlignmentSnap(node.id, node.position, otherPositions);
+      const resolved = resolveNodeCollision(node.id, snap.position, otherPositions);
+      setAlignmentGuide(undefined);
+      if (resolved.x !== node.position.x || resolved.y !== node.position.y) {
+        setFlowNodes((currentNodes) =>
+          currentNodes.map((candidate) =>
+            candidate.id === node.id ? { ...candidate, position: resolved } : candidate
+          )
+        );
+      }
+    },
+    [setFlowNodes]
+  );
 
   async function addLocalFiles(fileList: FileList | null) {
     if (!fileList?.length) {
@@ -694,7 +903,12 @@ export function App() {
   }
 
   return (
-    <main className="studio-app">
+    <main className={isSidebarHidden ? "studio-app studio-app-sidebar-hidden" : "studio-app"}>
+      {isSidebarHidden ? (
+        <button className="sidebar-reopen" title="Show navigation" onClick={() => setIsSidebarHidden(false)}>
+          EA
+        </button>
+      ) : null}
       <aside className="studio-sidebar">
         <div className="studio-brand">
           <div className="brand-mark">EA</div>
@@ -702,6 +916,9 @@ export function App() {
             <h1>Agent Workflow Studio</h1>
             <p>Local workflow lab</p>
           </div>
+          <button className="icon-button sidebar-hide-button" title="Hide navigation" onClick={() => setIsSidebarHidden(true)}>
+            <X size={15} />
+          </button>
         </div>
         <nav className="studio-nav">
           <button className={page === "home" ? "active" : ""} onClick={() => setPage("home")}>
@@ -759,17 +976,31 @@ export function App() {
           flowNodes={flowNodes}
           flowEdges={flowEdges}
           nodeRunsByNodeId={nodeRunsByNodeId}
+          artifactsByNodeId={artifactsByNodeId}
+          pendingInsertEdgeId={pendingInsertEdgeId}
+          detailsPanelOpen={isDetailsPanelOpen}
+          flowViewport={flowViewport}
+          alignmentGuide={alignmentGuide}
           isBusy={isBusy}
           onWorkflowField={updateWorkflowField}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
-          onSelectNode={setSelectedNodeId}
+          onSelectNode={(nodeId) => {
+            setSelectedNodeId(nodeId);
+            setIsDetailsPanelOpen(true);
+          }}
           onAddNode={addWorkflowNode}
           onDeleteNode={deleteSelectedNode}
           onUpdateNode={updateSelectedNode}
           onSave={() => void saveWorkflow()}
           onAutoLayout={autoLayoutNodes}
+          onFitView={fitWorkflowView}
+          onFlowInit={setFlowInstance}
+          onViewportMove={setFlowViewport}
+          onNodeDrag={onNodeDrag}
+          onNodeDragStop={onNodeDragStop}
+          onToggleDetailsPanel={() => setIsDetailsPanelOpen((current) => !current)}
           onStartRun={() => void startRun()}
           onRefreshRun={() => runState && void refreshRun(runState.run.id)}
           onAddFiles={(files) => void addLocalFiles(files)}
@@ -905,19 +1136,30 @@ function BuilderPage(props: {
   optionalDiff: string;
   approvalComment: string;
   flowNodes: Node<WorkflowNodeData>[];
-  flowEdges: Edge[];
+  flowEdges: WorkflowEdge[];
   nodeRunsByNodeId: Map<string, NodeRun>;
+  artifactsByNodeId: Map<string, Artifact[]>;
+  pendingInsertEdgeId?: string;
+  detailsPanelOpen: boolean;
+  flowViewport: Viewport;
+  alignmentGuide?: NodeAlignmentGuide;
   isBusy: boolean;
   onWorkflowField: <K extends keyof WorkflowDefinition>(field: K, value: WorkflowDefinition[K]) => void;
   onNodesChange: OnNodesChange<Node<WorkflowNodeData>>;
-  onEdgesChange: OnEdgesChange<Edge>;
+  onEdgesChange: OnEdgesChange<WorkflowEdge>;
   onConnect: (connection: Connection) => void;
   onSelectNode: (nodeId: string) => void;
   onAddNode: (type: WorkflowNodeType) => void;
   onDeleteNode: () => void;
   onUpdateNode: (patch: Partial<WorkflowNodeDefinition>) => void;
   onSave: () => void;
-  onAutoLayout: () => void;
+  onAutoLayout: (kind: WorkflowLayoutKind) => void;
+  onFitView: () => void;
+  onFlowInit: (instance: ReactFlowInstance<Node<WorkflowNodeData>, WorkflowEdge>) => void;
+  onViewportMove: (viewport: Viewport) => void;
+  onNodeDrag: OnNodeDrag<Node<WorkflowNodeData>>;
+  onNodeDragStop: OnNodeDrag<Node<WorkflowNodeData>>;
+  onToggleDetailsPanel: () => void;
   onStartRun: () => void;
   onRefreshRun: () => void;
   onAddFiles: (files: FileList | null) => void;
@@ -931,6 +1173,8 @@ function BuilderPage(props: {
   onApprovalComment: (value: string) => void;
   onResolveApproval: (action: ApprovalRequest["action"]) => void;
 }) {
+  const [layoutMenuOpen, setLayoutMenuOpen] = useState(false);
+
   if (!props.workflow) {
     return <section className="studio-page empty-state">Loading workflow...</section>;
   }
@@ -938,9 +1182,15 @@ function BuilderPage(props: {
   const status = props.selectedNode
     ? props.nodeRunsByNodeId.get(props.selectedNode.id)?.status ?? "pending"
     : "pending";
+  const verticalGuideLeft = props.alignmentGuide?.vertical === undefined
+    ? undefined
+    : props.alignmentGuide.vertical * props.flowViewport.zoom + props.flowViewport.x;
+  const horizontalGuideTop = props.alignmentGuide?.horizontal === undefined
+    ? undefined
+    : props.alignmentGuide.horizontal * props.flowViewport.zoom + props.flowViewport.y;
 
   return (
-    <section className="builder-shell">
+    <section className={props.detailsPanelOpen ? "builder-shell" : "builder-shell builder-shell-detail-collapsed"}>
       <header className="builder-header">
         <div className="workflow-title-edit">
           <input
@@ -953,13 +1203,43 @@ function BuilderPage(props: {
           />
         </div>
         <div className="workspace-actions">
-          <button className="ghost-button" onClick={props.onAutoLayout}>
-            <Workflow size={16} />
-            Layout
-          </button>
+          <div className="layout-menu">
+            <button className="ghost-button" onClick={() => setLayoutMenuOpen((current) => !current)}>
+              <Workflow size={16} />
+              Layout
+              <ChevronDown size={15} />
+            </button>
+            {layoutMenuOpen ? (
+              <div className="layout-menu-popover">
+                {LAYOUT_MENU_OPTIONS.map((option) => (
+                  <button
+                    key={option.kind}
+                    onClick={() => {
+                      props.onAutoLayout(option.kind);
+                      setLayoutMenuOpen(false);
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+                <button
+                  onClick={() => {
+                    props.onFitView();
+                    setLayoutMenuOpen(false);
+                  }}
+                >
+                  Fit View
+                </button>
+              </div>
+            ) : null}
+          </div>
           <button className="ghost-button" onClick={props.onSave} disabled={props.isBusy}>
             <Save size={16} />
             Save
+          </button>
+          <button className="ghost-button" onClick={props.onToggleDetailsPanel}>
+            {props.detailsPanelOpen ? <X size={16} /> : <FileText size={16} />}
+            {props.detailsPanelOpen ? "Hide details" : "Show details"}
           </button>
           <button className="primary-button compact" onClick={props.onStartRun} disabled={props.isBusy}>
             {props.isBusy ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />}
@@ -971,6 +1251,9 @@ function BuilderPage(props: {
       <aside className="builder-left">
         <div className="tool-group">
           <h3>Add Node</h3>
+          {props.pendingInsertEdgeId ? (
+            <div className="insert-hint">Pick a processing node to insert on the selected edge.</div>
+          ) : null}
           <div className="node-palette-group">
             <span className="palette-label">Trigger</span>
             <button className="ghost-button" onClick={() => props.onAddNode("trigger")}>
@@ -1048,12 +1331,20 @@ function BuilderPage(props: {
           nodes={props.flowNodes}
           edges={props.flowEdges}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           onNodesChange={props.onNodesChange}
           onEdgesChange={props.onEdgesChange}
           onConnect={props.onConnect}
           onNodeClick={(_event, node) => props.onSelectNode(node.id)}
+          onInit={props.onFlowInit}
+          onMove={(_event, viewport) => props.onViewportMove(viewport)}
+          onNodeDrag={props.onNodeDrag}
+          onNodeDragStop={props.onNodeDragStop}
           nodesDraggable
+          snapToGrid
+          snapGrid={WORKFLOW_SNAP_GRID}
           fitView
+          fitViewOptions={{ padding: 0.18 }}
           minZoom={0.35}
           maxZoom={1.4}
         >
@@ -1061,14 +1352,26 @@ function BuilderPage(props: {
           <MiniMap pannable zoomable nodeStrokeWidth={2} />
           <Controls />
         </ReactFlow>
+        {verticalGuideLeft !== undefined ? (
+          <div className="alignment-guide-vertical" style={{ left: verticalGuideLeft }} />
+        ) : null}
+        {horizontalGuideTop !== undefined ? (
+          <div className="alignment-guide-horizontal" style={{ top: horizontalGuideTop }} />
+        ) : null}
       </div>
 
-      <aside className="builder-right">
+      <aside className={props.detailsPanelOpen ? "builder-right" : "builder-right builder-right-collapsed"}>
+        <button className="icon-button details-close-button" title="Hide details" onClick={props.onToggleDetailsPanel}>
+          <X size={15} />
+        </button>
         <NodeEditor
           node={props.selectedNode}
+          workflow={props.workflow}
           status={status}
           agents={props.agents}
           skills={props.skills}
+          nodeRunsByNodeId={props.nodeRunsByNodeId}
+          artifactsByNodeId={props.artifactsByNodeId}
           artifacts={props.selectedNodeArtifacts}
           selectedArtifact={props.selectedArtifact}
           selectedArtifactId={props.selectedArtifactId}
@@ -1164,9 +1467,12 @@ function RunInputPanel(props: {
 
 function NodeEditor(props: {
   node?: WorkflowNodeDefinition;
+  workflow: WorkflowDefinition;
   status: NodeRunStatus;
   agents: AgentDefinition[];
   skills: SkillDefinition[];
+  nodeRunsByNodeId: Map<string, NodeRun>;
+  artifactsByNodeId: Map<string, Artifact[]>;
   artifacts: Artifact[];
   selectedArtifact?: ArtifactWithContent;
   selectedArtifactId?: string;
@@ -1182,6 +1488,12 @@ function NodeEditor(props: {
   onApprovalComment: (value: string) => void;
   onResolveApproval: (action: ApprovalRequest["action"]) => void;
 }) {
+  const [activeTab, setActiveTab] = useState<"parameters" | "inputs" | "outputs" | "run">("parameters");
+
+  useEffect(() => {
+    setActiveTab("parameters");
+  }, [props.node?.id]);
+
   if (!props.node) {
     return <div className="empty-state">Select a node to edit it.</div>;
   }
@@ -1197,6 +1509,15 @@ function NodeEditor(props: {
         </div>
         <span className={`pill pill-${props.status}`}>{props.status.replace("_", " ")}</span>
       </div>
+      <div className="detail-tabs">
+        {(["parameters", "inputs", "outputs", "run"] as const).map((tab) => (
+          <button key={tab} className={activeTab === tab ? "active" : ""} onClick={() => setActiveTab(tab)}>
+            {titleCase(tab)}
+          </button>
+        ))}
+      </div>
+      {activeTab === "parameters" ? (
+        <>
       <label>
         Name
         <input value={props.node.name} onChange={(event) => props.onUpdateNode({ name: event.target.value })} />
@@ -1470,6 +1791,131 @@ function NodeEditor(props: {
           </label>
         </section>
       ) : null}
+      <button className="danger-button full" disabled={props.node.type === "input" || props.node.type === "trigger"} onClick={props.onDeleteNode}>
+        <Trash2 size={16} />
+        Delete node
+      </button>
+        </>
+      ) : null}
+      {activeTab === "inputs" ? (
+        <NodeConnectionPanel
+          node={props.node}
+          workflow={props.workflow}
+          direction="inputs"
+          nodeRunsByNodeId={props.nodeRunsByNodeId}
+          artifactsByNodeId={props.artifactsByNodeId}
+        />
+      ) : null}
+      {activeTab === "outputs" ? (
+        <>
+          <NodeConnectionPanel
+            node={props.node}
+            workflow={props.workflow}
+            direction="outputs"
+            nodeRunsByNodeId={props.nodeRunsByNodeId}
+            artifactsByNodeId={props.artifactsByNodeId}
+          />
+      <ArtifactPanel
+        artifacts={props.artifacts}
+        selectedArtifact={props.selectedArtifact}
+        selectedArtifactId={props.selectedArtifactId}
+        viewMode={props.viewMode}
+        onArtifact={props.onArtifact}
+        onViewMode={props.onViewMode}
+        onCopyArtifact={props.onCopyArtifact}
+        onDownloadArtifact={props.onDownloadArtifact}
+      />
+        </>
+      ) : null}
+      {activeTab === "run" ? (
+        <NodeRunPanel
+          node={props.node}
+          status={props.status}
+          artifacts={props.artifacts}
+          approvalComment={props.approvalComment}
+          isApprovalWaiting={props.isApprovalWaiting}
+          onApprovalComment={props.onApprovalComment}
+          onResolveApproval={props.onResolveApproval}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function NodeConnectionPanel(props: {
+  node: WorkflowNodeDefinition;
+  workflow: WorkflowDefinition;
+  direction: "inputs" | "outputs";
+  nodeRunsByNodeId: Map<string, NodeRun>;
+  artifactsByNodeId: Map<string, Artifact[]>;
+}) {
+  const connections = getWorkflowDisplayConnections(props.workflow).filter((connection) =>
+    props.direction === "inputs" ? connection.target === props.node.id : connection.source === props.node.id
+  );
+  const title = props.direction === "inputs" ? "Inputs" : "Outputs";
+
+  return (
+    <section className="detail-section flush">
+      <div className="section-title-row">
+        <h3>{title}</h3>
+        <span className="muted">{connections.length}</span>
+      </div>
+      <div className="connection-list">
+        {connections.length === 0 ? <p className="muted">No {title.toLowerCase()} connected.</p> : null}
+        {connections.map((connection) => {
+          const sourceNode = props.workflow.nodes.find((node) => node.id === connection.source);
+          const targetNode = props.workflow.nodes.find((node) => node.id === connection.target);
+          const peerNode = props.direction === "inputs" ? sourceNode : targetNode;
+          const peerStatus = peerNode ? props.nodeRunsByNodeId.get(peerNode.id)?.status ?? "pending" : "pending";
+          const peerArtifactCount = peerNode ? props.artifactsByNodeId.get(peerNode.id)?.length ?? 0 : 0;
+          return (
+            <article key={connection.id} className="connection-row">
+              <div className="connection-node-name">
+                {statusIcon(peerStatus)}
+                <strong>{peerNode?.name ?? "Missing node"}</strong>
+                <span className={`pill pill-${peerStatus}`}>{peerStatus.replace("_", " ")}</span>
+              </div>
+              <div className="connection-meta">
+                <span className="port-chip">{getConnectionPortLabel(sourceNode, "outputs", connection.sourceHandle)}</span>
+                <span className="connection-arrow">to</span>
+                <span className="port-chip">{getConnectionPortLabel(targetNode, "inputs", connection.targetHandle)}</span>
+                <small>{peerArtifactCount} artifact{peerArtifactCount === 1 ? "" : "s"}</small>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function NodeRunPanel(props: {
+  node: WorkflowNodeDefinition;
+  status: NodeRunStatus;
+  artifacts: Artifact[];
+  approvalComment: string;
+  isApprovalWaiting: boolean;
+  onApprovalComment: (value: string) => void;
+  onResolveApproval: (action: ApprovalRequest["action"]) => void;
+}) {
+  return (
+    <>
+      <section className="detail-section flush">
+        <div className="section-title-row">
+          <h3>Run</h3>
+          <span className={`pill pill-${props.status}`}>{props.status.replace("_", " ")}</span>
+        </div>
+        <div className="run-summary-grid">
+          <div>
+            <span>Node type</span>
+            <strong>{props.node.type}</strong>
+          </div>
+          <div>
+            <span>Artifacts</span>
+            <strong>{props.artifacts.length}</strong>
+          </div>
+        </div>
+      </section>
       {props.isApprovalWaiting ? (
         <section className="approval-box">
           <h3>Human Approval</h3>
@@ -1486,21 +1932,7 @@ function NodeEditor(props: {
           </div>
         </section>
       ) : null}
-      <button className="danger-button full" disabled={props.node.type === "input" || props.node.type === "trigger"} onClick={props.onDeleteNode}>
-        <Trash2 size={16} />
-        Delete node
-      </button>
-      <ArtifactPanel
-        artifacts={props.artifacts}
-        selectedArtifact={props.selectedArtifact}
-        selectedArtifactId={props.selectedArtifactId}
-        viewMode={props.viewMode}
-        onArtifact={props.onArtifact}
-        onViewMode={props.onViewMode}
-        onCopyArtifact={props.onCopyArtifact}
-        onDownloadArtifact={props.onDownloadArtifact}
-      />
-    </div>
+    </>
   );
 }
 
@@ -1725,10 +2157,9 @@ function ResourceEditor(props: { title: string; enabled: boolean; children: Reac
 }
 
 function WorkflowNodeCard({ data }: NodeProps<Node<WorkflowNodeData>>) {
-  const isCondition = data.nodeType === "condition";
   return (
     <div className={`flow-node flow-node-${data.nodeType} flow-node-${data.status}`}>
-      <Handle type="target" position={Position.Top} />
+      <NodePortHandles ports={data.ports.inputs} type="target" position={Position.Left} />
       <div className="node-topline">
         {statusIcon(data.status)}
         <span>{data.nodeType}</span>
@@ -1739,15 +2170,75 @@ function WorkflowNodeCard({ data }: NodeProps<Node<WorkflowNodeData>>) {
         <span>{data.status.replace("_", " ")}</span>
         <span>{data.artifactCount} artifact{data.artifactCount === 1 ? "" : "s"}</span>
       </div>
-      {isCondition ? (
-        <>
-          <Handle type="source" position={Position.Bottom} id="true" style={{ left: "30%" }} />
-          <Handle type="source" position={Position.Bottom} id="false" style={{ left: "70%" }} />
-        </>
-      ) : (
-        <Handle type="source" position={Position.Bottom} />
-      )}
+      <NodePortHandles ports={data.ports.outputs} type="source" position={Position.Right} />
     </div>
+  );
+}
+
+function NodePortHandles(props: {
+  ports: WorkflowNodePorts["inputs"];
+  type: "source" | "target";
+  position: Position.Left | Position.Right;
+}) {
+  return (
+    <>
+      {props.ports.map((port, index) => {
+        const top = `${((index + 1) / (props.ports.length + 1)) * 100}%`;
+        const side = props.position === Position.Left ? "input" : "output";
+        return (
+          <div key={port.handle}>
+            <Handle
+              type={props.type}
+              id={port.handle}
+              position={props.position}
+              className={`node-handle node-handle-${side}`}
+              style={{ top }}
+            />
+            <span className={`node-port-label node-port-label-${side}`} style={{ top }}>
+              {port.label}
+            </span>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+function WorkflowConnectionEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  markerEnd,
+  style,
+  data
+}: EdgeProps<WorkflowEdge>) {
+  const [edgePath, labelX, labelY] = getBezierPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition
+  });
+
+  return (
+    <>
+      <BaseEdge id={id} path={edgePath} markerEnd={markerEnd} style={style} />
+      <EdgeLabelRenderer>
+        <div className="workflow-edge-actions nodrag nopan" style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}>
+          <button className="icon-button mini" title="Insert node" onClick={() => data?.onInsertEdge?.(id)}>
+            <Plus size={13} />
+          </button>
+          <button className="icon-button mini danger-icon" title="Delete connection" onClick={() => data?.onDeleteEdge?.(id)}>
+            <X size={13} />
+          </button>
+        </div>
+      </EdgeLabelRenderer>
+    </>
   );
 }
 
@@ -1883,19 +2374,16 @@ function Metric({ title, value }: { title: string; value: number }) {
 function materializeWorkflowFromCanvas(
   workflow: WorkflowDefinition,
   nodes: Node<WorkflowNodeData>[],
-  edges: Edge[]
+  edges: WorkflowEdge[]
 ): WorkflowDefinition {
   const dependencies = new Map<string, string[]>();
-  const connections: import("@agent-studio/shared").WorkflowConnection[] = [];
+  const connections: WorkflowConnection[] = [];
   for (const edge of edges) {
-    dependencies.set(edge.target, [...(dependencies.get(edge.target) ?? []), edge.source]);
-    const sourceHandle = (edge.sourceHandle as import("@agent-studio/shared").WorkflowConnectionHandle) ?? "main";
-    connections.push({
-      id: edge.id || `${edge.source}-${edge.target}`,
-      source: edge.source,
-      target: edge.target,
-      sourceHandle
-    });
+    const currentDependencies = dependencies.get(edge.target) ?? [];
+    if (!currentDependencies.includes(edge.source)) {
+      dependencies.set(edge.target, [...currentDependencies, edge.source]);
+    }
+    connections.push(edgeToWorkflowConnection(edge));
   }
   const positions = new Map(nodes.map((node) => [node.id, node.position]));
   return {
@@ -1909,6 +2397,47 @@ function materializeWorkflowFromCanvas(
     })),
     connections
   };
+}
+
+function getWorkflowDisplayConnections(workflow: WorkflowDefinition): WorkflowConnection[] {
+  if (workflow.connections?.length) {
+    return workflow.connections.map(normalizeWorkflowConnection);
+  }
+
+  return workflow.nodes.flatMap((node) =>
+    (node.depends_on ?? []).map((dependency) =>
+      normalizeWorkflowConnection({
+        id: createConnectionId(dependency, undefined, node.id, undefined),
+        source: dependency,
+        target: node.id
+      })
+    )
+  );
+}
+
+function applyConnectionDependencies(
+  nodes: WorkflowNodeDefinition[],
+  connections: WorkflowConnection[]
+): WorkflowNodeDefinition[] {
+  const dependencies = new Map<string, string[]>();
+  for (const connection of connections) {
+    const existing = dependencies.get(connection.target) ?? [];
+    if (!existing.includes(connection.source)) {
+      existing.push(connection.source);
+    }
+    dependencies.set(connection.target, existing);
+  }
+  return nodes.map((node) => ({ ...node, depends_on: dependencies.get(node.id) ?? [] }));
+}
+
+function getConnectionPortLabel(
+  node: WorkflowNodeDefinition | undefined,
+  mode: "inputs" | "outputs",
+  handle: string | undefined
+): string {
+  const normalizedHandle = normalizeConnectionHandle(handle, mode);
+  const port = node ? getNodePorts(node)[mode].find((candidate) => candidate.handle === normalizedHandle) : undefined;
+  return port?.label ?? normalizedHandle ?? "main";
 }
 
 function createNode(type: WorkflowNodeType, id: string, dependency?: string): WorkflowNodeDefinition {
@@ -1975,14 +2504,6 @@ function uniqueNodeId(type: WorkflowNodeType, nodes: WorkflowNodeDefinition[]): 
     id = `${type}_${index}`;
   }
   return id;
-}
-
-function getAutoLayoutPositions(nodes: WorkflowNodeDefinition[]): Map<string, { x: number; y: number }> {
-  const positions = new Map<string, { x: number; y: number }>();
-  nodes.forEach((node, index) => {
-    positions.set(node.id, { x: 120 + index * 310, y: 160 });
-  });
-  return positions;
 }
 
 function groupArtifactsByNode(artifacts: Artifact[]): Map<string, Artifact[]> {

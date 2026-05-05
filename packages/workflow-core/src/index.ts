@@ -4,6 +4,13 @@ import type {
   WorkflowDefinition,
   WorkflowNode
 } from "@agent-studio/shared";
+import {
+  createConnectionId,
+  getNodePorts,
+  normalizeWorkflowConnection,
+  normalizeWorkflowConnections,
+  parseConnectionHandle
+} from "@agent-studio/shared";
 
 const VALID_NODE_TYPES = new Set([
   "input",
@@ -20,8 +27,6 @@ const VALID_NODE_TYPES = new Set([
   "merge",
   "filter"
 ]);
-
-const CONDITION_HANDLES = new Set(["true", "false"]);
 
 export function parseWorkflowDefinition(yamlText: string): WorkflowDefinition {
   const parsed = parse(yamlText) as WorkflowDefinition;
@@ -81,7 +86,7 @@ export function validateWorkflowDefinition(workflow: WorkflowDefinition): void {
 }
 
 export function getWorkflowConnections(workflow: WorkflowDefinition): WorkflowConnection[] {
-  return workflow.connections ?? [];
+  return normalizeWorkflowConnections(workflow.connections ?? []);
 }
 
 export function connectionsToDependsOn(
@@ -90,7 +95,7 @@ export function connectionsToDependsOn(
 ): WorkflowNode[] {
   const depsByTarget = new Map<string, string[]>();
 
-  for (const conn of connections) {
+  for (const conn of normalizeWorkflowConnections(connections)) {
     const existing = depsByTarget.get(conn.target) ?? [];
     if (!existing.includes(conn.source)) {
       existing.push(conn.source);
@@ -99,11 +104,16 @@ export function connectionsToDependsOn(
   }
 
   return nodes.map((node) => {
-    const deps = depsByTarget.get(node.id) ?? [];
-    if (deps.length === 0 && (!node.depends_on || node.depends_on.length === 0)) {
+    const deps = [...(node.depends_on ?? [])];
+    for (const connectionDep of depsByTarget.get(node.id) ?? []) {
+      if (!deps.includes(connectionDep)) {
+        deps.push(connectionDep);
+      }
+    }
+    if (deps.length === 0) {
       return { ...node, depends_on: [] };
     }
-    return { ...node, depends_on: deps.length > 0 ? deps : (node.depends_on ?? []) };
+    return { ...node, depends_on: deps };
   });
 }
 
@@ -164,11 +174,18 @@ function validateConnections(
   nodes: WorkflowNode[]
 ): void {
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
+  const seenIds = new Set<string>();
+  const seenPairs = new Set<string>();
 
   for (const conn of connections) {
     if (!conn.id || !conn.source || !conn.target) {
       throw new Error(`Invalid connection: ${JSON.stringify(conn)}`);
     }
+
+    if (seenIds.has(conn.id)) {
+      throw new Error(`Duplicate connection id: ${conn.id}.`);
+    }
+    seenIds.add(conn.id);
 
     if (!nodeIds.has(conn.source)) {
       throw new Error(`Connection ${conn.id} references missing source node ${conn.source}.`);
@@ -182,17 +199,42 @@ function validateConnections(
       throw new Error(`Connection ${conn.id} creates a self-loop on node ${conn.source}.`);
     }
 
-    if (conn.sourceHandle && !CONDITION_HANDLES.has(conn.sourceHandle) && conn.sourceHandle !== "main") {
+    const sourceHandle = parseConnectionHandle(conn.sourceHandle, "outputs");
+    const targetHandle = parseConnectionHandle(conn.targetHandle, "inputs");
+    if (!sourceHandle.valid) {
       throw new Error(`Connection ${conn.id} has invalid sourceHandle ${conn.sourceHandle}.`);
     }
+    if (!targetHandle.valid) {
+      throw new Error(`Connection ${conn.id} has invalid targetHandle ${conn.targetHandle}.`);
+    }
 
-    const sourceNode = nodeById.get(conn.source);
-    if (sourceNode?.type === "condition") {
-      if (!conn.sourceHandle || !CONDITION_HANDLES.has(conn.sourceHandle)) {
-        throw new Error(
-          `Connection ${conn.id} from condition node ${conn.source} must have sourceHandle "true" or "false".`
-        );
-      }
+    const normalized = normalizeWorkflowConnection(conn);
+    const deterministicId = createConnectionId(
+      normalized.source,
+      normalized.sourceHandle,
+      normalized.target,
+      normalized.targetHandle
+    );
+    if (seenPairs.has(deterministicId)) {
+      throw new Error(`Duplicate connection between ${normalized.source} and ${normalized.target}.`);
+    }
+    seenPairs.add(deterministicId);
+
+    const sourceNode = nodeById.get(normalized.source);
+    const targetNode = nodeById.get(normalized.target);
+    const sourcePorts = sourceNode ? getNodePorts(sourceNode).outputs : [];
+    const targetPorts = targetNode ? getNodePorts(targetNode).inputs : [];
+
+    if (!sourcePorts.some((port) => port.handle === normalized.sourceHandle)) {
+      throw new Error(
+        `Connection ${conn.id} references missing source output port ${normalized.sourceHandle} on node ${normalized.source}.`
+      );
+    }
+
+    if (!targetPorts.some((port) => port.handle === normalized.targetHandle)) {
+      throw new Error(
+        `Connection ${conn.id} references missing target input port ${normalized.targetHandle} on node ${normalized.target}.`
+      );
     }
   }
 }
@@ -204,8 +246,9 @@ function buildEffectiveDependencies(workflow: WorkflowDefinition): Map<string, s
     deps.set(node.id, [...(node.depends_on ?? [])]);
   }
 
-  if (workflow.connections) {
-    for (const conn of workflow.connections) {
+  const connections = getWorkflowConnections(workflow);
+  if (connections.length > 0) {
+    for (const conn of connections) {
       const existing = deps.get(conn.target) ?? [];
       if (!existing.includes(conn.source)) {
         existing.push(conn.source);
